@@ -3,6 +3,7 @@ from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 
 
+
 class RAGPipeline:
     def __init__(self, collection_name="document_collection"):
 
@@ -61,3 +62,4 @@ class RAGPipeline:
             )
         except Exception as e:
             print("Clear collection error:", e)
+
