@@ -1,8 +1,8 @@
 import os
+import json
+import time
 import google.generativeai as genai
 from dotenv import load_dotenv
-import time
-import json
 
 load_dotenv()
 
@@ -26,14 +26,12 @@ class AIAgent:
             print(f"Model init error: {e}")
             self.model = None
 
-    def _generate(self, prompt: str, max_retries: int = None) -> str:
+    # ---------------- SAFE GENERATION ----------------
+    def _generate(self, prompt: str) -> str:
         if not self.model:
             return "Error: Gemini model not initialized."
 
-        if max_retries is None:
-            max_retries = self.max_retries
-
-        for attempt in range(max_retries):
+        for attempt in range(self.max_retries):
             try:
                 response = self.model.generate_content(
                     prompt,
@@ -44,16 +42,20 @@ class AIAgent:
                     )
                 )
 
-                return response.text if response.text else "Empty response"
+                if response and response.text:
+                    return response.text.strip()
 
-            except Exception:
-                if attempt < max_retries - 1:
+                return "Empty response"
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay)
                 else:
-                    return "Error: Gemini generation failed"
+                    return f"Error: Gemini failed - {str(e)}"
 
         return "Error: Failed after retries"
 
+    # ---------------- QA ----------------
     def ask_question(self, query: str, context: str) -> str:
         prompt = f"""
 You are a strict document-based AI assistant.
@@ -73,42 +75,54 @@ ANSWER:
 """
         return self._generate(prompt)
 
+    # ---------------- QUIZ ----------------
     def generate_quiz(self, context: str, num_questions: int = 5) -> str:
         prompt = f"""
 Create {num_questions} MCQs.
 
 Return ONLY valid JSON:
-
 [
   {{
-    "question": "...",
+    "question": "string",
     "options": ["A", "B", "C", "D"],
-    "answer": 0
+    "answer_index": 0
   }}
 ]
 
 Context:
 {context}
 """
+
         result = self._generate(prompt)
 
+        # ---------------- SAFE JSON PARSE ----------------
         try:
-            return json.dumps(json.loads(result), indent=2)
-        except:
+            cleaned = result.strip()
+
+            # remove markdown fences if Gemini adds them
+            if "```" in cleaned:
+                cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+
+            parsed = json.loads(cleaned)
+            return json.dumps(parsed, indent=2)
+
+        except Exception:
             return result
 
+    # ---------------- SIMPLIFY ----------------
     def explain_simply(self, context: str) -> str:
         prompt = f"""
-Explain simply:
+Explain the following in simple bullet points:
 
-- bullet points
-- simple words
+- simple language
+- short sentences
 
 Context:
 {context}
 """
         return self._generate(prompt)
 
+    # ---------------- AGENT ----------------
     def handle_agent_task(self, task: str, context: str) -> str:
         prompt = f"""
 Task: {task}
@@ -116,6 +130,6 @@ Task: {task}
 Context:
 {context}
 
-Return structured explanation.
+Return structured step-by-step response.
 """
         return self._generate(prompt)

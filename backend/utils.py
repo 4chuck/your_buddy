@@ -13,9 +13,6 @@ except ImportError:
     Presentation = None
 
 
-# ----------------------------
-# PDF EXTRACTION (SAFE)
-# ----------------------------
 def extract_text_from_pdf(pdf_path):
     text_content = []
 
@@ -26,11 +23,13 @@ def extract_text_from_pdf(pdf_path):
             for page_num, page in enumerate(reader.pages):
                 text = page.extract_text()
 
-                if text and text.strip():
-                    text_content.append({
-                        "page": page_num + 1,
-                        "text": text.strip()
-                    })
+                if text:
+                    text = text.strip()
+                    if text:
+                        text_content.append({
+                            "page": page_num + 1,
+                            "text": text
+                        })
 
     except Exception as e:
         print(f"PDF extraction error: {e}")
@@ -38,18 +37,18 @@ def extract_text_from_pdf(pdf_path):
     return text_content
 
 
-# ----------------------------
-# DOCX EXTRACTION
-# ----------------------------
 def extract_text_from_docx(docx_path):
     if docx is None:
         return []
 
     try:
         document = docx.Document(docx_path)
-        text = "\n".join([p.text for p in document.paragraphs if p.text.strip()])
 
-        if text.strip():
+        text = "\n".join(
+            [p.text for p in document.paragraphs if p.text and p.text.strip()]
+        )
+
+        if text:
             return [{"page": 1, "text": text.strip()}]
 
     except Exception as e:
@@ -58,9 +57,6 @@ def extract_text_from_docx(docx_path):
     return []
 
 
-# ----------------------------
-# PPTX EXTRACTION
-# ----------------------------
 def extract_text_from_pptx(pptx_path):
     if Presentation is None:
         return []
@@ -73,8 +69,10 @@ def extract_text_from_pptx(pptx_path):
             slide_text = []
 
             for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text.strip():
-                    slide_text.append(shape.text.strip())
+                if hasattr(shape, "text") and shape.text:
+                    t = shape.text.strip()
+                    if t:
+                        slide_text.append(t)
 
             if slide_text:
                 slides_text.append("\n".join(slide_text))
@@ -88,27 +86,23 @@ def extract_text_from_pptx(pptx_path):
     return []
 
 
-# ----------------------------
-# TEXT FILES
-# ----------------------------
 def extract_text_from_file(file_path):
     _, ext = os.path.splitext(file_path)
     ext = ext.lower()
 
     if ext == ".pdf":
         return extract_text_from_pdf(file_path)
-
     if ext == ".docx":
         return extract_text_from_docx(file_path)
-
     if ext == ".pptx":
         return extract_text_from_pptx(file_path)
 
     if ext in [".txt", ".md", ".csv", ".json", ".log", ".html", ".xml"]:
         try:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read().strip()
+                text = f.read()
 
+            text = text.strip()
             if text:
                 return [{"page": 1, "text": text}]
 
@@ -118,9 +112,6 @@ def extract_text_from_file(file_path):
     return []
 
 
-# ----------------------------
-# CLEAN CHUNKING (IMPORTANT FOR RAG QUALITY)
-# ----------------------------
 def chunk_text(text_data, chunk_size=900, overlap=150):
     chunks = []
 
@@ -128,24 +119,20 @@ def chunk_text(text_data, chunk_size=900, overlap=150):
         text = item.get("text", "")
         page = item.get("page", 1)
 
-        if not text:
+        if not isinstance(text, str):
             continue
 
-        # Clean noisy whitespace
         text = re.sub(r"\s+", " ", text).strip()
 
         start = 0
         while start < len(text):
             end = start + chunk_size
-
             chunk = text[start:end].strip()
 
-            if len(chunk) > 50:  # ignore tiny garbage chunks
+            if len(chunk) > 50:
                 chunks.append({
                     "content": chunk,
-                    "metadata": {
-                        "page": page
-                    }
+                    "metadata": {"page": page}
                 })
 
             start += chunk_size - overlap

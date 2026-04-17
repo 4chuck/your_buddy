@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Dict, Any
 from uuid import uuid4
 import os
 import shutil
@@ -10,12 +10,9 @@ from utils import extract_text_from_file, chunk_text
 from rag_pipeline import RAGPipeline
 from agent import AIAgent
 
-
 app = FastAPI(title="NotebookLM Clone API")
 
 # ---------------- CORS ----------------
-from fastapi.middleware.cors import CORSMiddleware
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -41,14 +38,13 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 class QueryRequest(BaseModel):
     query: str
     mode: str = "qa"
-    options: dict = Field(default_factory=dict)
+    options: Dict[str, Any] = Field(default_factory=dict)
 
 
-# ---------------- ROUTES ----------------
+# ---------------- HEALTH ----------------
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "Backend is running"}
-
+    return {"status": "ok", "message": "Backend running"}
 
 @app.get("/health")
 def health():
@@ -58,7 +54,7 @@ def health():
 # ---------------- FILE UPLOAD ----------------
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".pptx"}
 
-def is_valid_file(filename: str):
+def is_valid_file(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in ALLOWED_EXTENSIONS
 
 
@@ -75,25 +71,26 @@ async def upload_files(files: List[UploadFile] = File(...)):
 
             path = os.path.join(UPLOAD_DIR, f"{uuid4().hex}_{file.filename}")
 
-            try:
-                with open(path, "wb") as f:
-                    shutil.copyfileobj(file.file, f)
-            finally:
-                file.file.close()
+            with open(path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
 
-            text = extract_text_from_file(path)
+            file.file.close()
+
+            text_data = extract_text_from_file(path)
 
             try:
                 os.remove(path)
             except:
                 pass
 
-            if not text or not text.strip():
+            if not text_data:
                 continue
 
-            chunks = chunk_text(text)
-            all_chunks.extend(chunks)
-            total_chunks += len(chunks)
+            chunks = chunk_text(text_data)
+
+            if chunks:
+                all_chunks.extend(chunks)
+                total_chunks += len(chunks)
 
         if all_chunks:
             rag.add_documents(all_chunks)
@@ -111,26 +108,44 @@ async def upload_files(files: List[UploadFile] = File(...)):
 # ---------------- QUERY ----------------
 @app.post("/query")
 async def query(req: QueryRequest):
-    results = rag.query(req.query, n_results=5)
+    try:
+        results = rag.query(req.query, n_results=5)
 
-    docs = results.get("documents", [[]])[0]
-    context = "\n\n".join(docs)
+        docs = results.get("documents", [])
 
-    if not context or not context.strip():
-        return {"response": "No relevant context found in uploaded documents."}
+        # ---------------- SAFE FLATTENING ----------------
+        flat_docs = []
 
-    if req.mode == "quiz":
-        return {
-            "response": agent.generate_quiz(
-                context,
-                req.options.get("num_questions", 5)
-            )
-        }
+        if isinstance(docs, list):
+            for d in docs:
+                if isinstance(d, list):
+                    flat_docs.extend(d)
+                elif isinstance(d, str):
+                    flat_docs.append(d)
 
-    if req.mode == "simplify":
-        return {"response": agent.explain_simply(context)}
+        context = "\n\n".join(
+            str(d).strip() for d in flat_docs if isinstance(d, str) and d.strip()
+        )
 
-    if req.mode == "agent":
-        return {"response": agent.handle_agent_task(req.query, context)}
+        if not context.strip():
+            return {"response": "No relevant context found in uploaded documents."}
 
-    return {"response": agent.ask_question(req.query, context)}
+        # ---------------- MODES ----------------
+        if req.mode == "quiz":
+            return {
+                "response": agent.generate_quiz(
+                    context,
+                    req.options.get("num_questions", 5)
+                )
+            }
+
+        if req.mode == "simplify":
+            return {"response": agent.explain_simply(context)}
+
+        if req.mode == "agent":
+            return {"response": agent.handle_agent_task(req.query, context)}
+
+        return {"response": agent.ask_question(req.query, context)}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
