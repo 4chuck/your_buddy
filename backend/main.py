@@ -14,12 +14,15 @@ from agent import AIAgent
 app = FastAPI(title="NotebookLM Clone API")
 
 # ---------------- CORS ----------------
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5500",
         "http://127.0.0.1:5500",
-        "https://your-frontend-domain.com"
+        "https://4chuck.github.io",
+        "https://your-buddy-phi.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
