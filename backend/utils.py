@@ -1,6 +1,7 @@
 import os
 import re
 import PyPDF2
+import io
 
 try:
     import docx
@@ -13,23 +14,22 @@ except ImportError:
     Presentation = None
 
 
-def extract_text_from_pdf(pdf_path):
+def extract_text_from_pdf(file_stream):
     text_content = []
 
     try:
-        with open(pdf_path, "rb") as file:
-            reader = PyPDF2.PdfReader(file)
+        reader = PyPDF2.PdfReader(file_stream)
 
-            for page_num, page in enumerate(reader.pages):
-                text = page.extract_text()
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
 
+            if text:
+                text = text.strip()
                 if text:
-                    text = text.strip()
-                    if text:
-                        text_content.append({
-                            "page": page_num + 1,
-                            "text": text
-                        })
+                    text_content.append({
+                        "page": page_num + 1,
+                        "text": text
+                    })
 
     except Exception as e:
         print(f"PDF extraction error: {e}")
@@ -37,12 +37,12 @@ def extract_text_from_pdf(pdf_path):
     return text_content
 
 
-def extract_text_from_docx(docx_path):
+def extract_text_from_docx(file_stream):
     if docx is None:
         return []
 
     try:
-        document = docx.Document(docx_path)
+        document = docx.Document(file_stream)
 
         text = "\n".join(
             [p.text for p in document.paragraphs if p.text and p.text.strip()]
@@ -57,12 +57,12 @@ def extract_text_from_docx(docx_path):
     return []
 
 
-def extract_text_from_pptx(pptx_path):
+def extract_text_from_pptx(file_stream):
     if Presentation is None:
         return []
 
     try:
-        prs = Presentation(pptx_path)
+        prs = Presentation(file_stream)
         slides_text = []
 
         for slide in prs.slides:
@@ -86,22 +86,29 @@ def extract_text_from_pptx(pptx_path):
     return []
 
 
-def extract_text_from_file(file_path):
+def extract_text_from_file(file_path, file_stream=None):
     _, ext = os.path.splitext(file_path)
     ext = ext.lower()
 
+    if file_stream is None:
+        try:
+            with open(file_path, "rb") as f:
+                file_stream = io.BytesIO(f.read())
+        except Exception:
+            return []
+    
+    file_stream.seek(0)
+
     if ext == ".pdf":
-        return extract_text_from_pdf(file_path)
+        return extract_text_from_pdf(file_stream)
     if ext == ".docx":
-        return extract_text_from_docx(file_path)
+        return extract_text_from_docx(file_stream)
     if ext == ".pptx":
-        return extract_text_from_pptx(file_path)
+        return extract_text_from_pptx(file_stream)
 
     if ext in [".txt", ".md", ".csv", ".json", ".log", ".html", ".xml"]:
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-
+            text = file_stream.read().decode("utf-8", errors="ignore")
             text = text.strip()
             if text:
                 return [{"page": 1, "text": text}]
