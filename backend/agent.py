@@ -21,10 +21,12 @@ class AIAgent:
         self.retry_delay = 1
 
         try:
-            self.model = genai.GenerativeModel("gemini-1.5-flash-latest")
-        except Exception as e:
-            print(f"Model init error: {e}")
-            self.model = None
+            self.model = genai.GenerativeModel("gemini-1.5-flash")
+        except Exception:
+            try:
+                self.model = genai.GenerativeModel("gemini-pro")
+            except Exception:
+                self.model = None
 
     # ---------------- SAFE GENERATION ----------------
     def _generate(self, prompt: str) -> str:
