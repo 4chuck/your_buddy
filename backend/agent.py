@@ -21,7 +21,7 @@ class AIAgent:
         self.retry_delay = 1
 
         try:
-            self.model = genai.GenerativeModel("gemini-1.5-flash")
+            self.model = genai.GenerativeModel("gemini-1.5-flash-latest")
         except Exception as e:
             print(f"Model init error: {e}")
             self.model = None
