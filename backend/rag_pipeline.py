@@ -1,6 +1,7 @@
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
+from chromadb.utils import embedding_functions
+
 
 class RAGPipeline:
     def __init__(self, collection_name="document_collection"):
@@ -8,18 +9,18 @@ class RAGPipeline:
         Lightweight + Render-safe RAG pipeline
         """
 
-        # ⚠️ Small embedding model (OK for hackathon)
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        #  Chroma built-in embedding function (NO sentence-transformers needed)
+        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
 
-        # ⚠️ In-memory ChromaDB (IMPORTANT for Render)
+        #  In-memory / ephemeral DB (Render-safe)
         self.client = chromadb.Client(
-            Settings(
-                anonymized_telemetry=False
-            )
+            Settings(anonymized_telemetry=False)
         )
 
+        #  IMPORTANT: attach embedding function here
         self.collection = self.client.get_or_create_collection(
-            name=collection_name
+            name=collection_name,
+            embedding_function=self.embedding_function
         )
 
     # ----------------------------
@@ -31,9 +32,10 @@ class RAGPipeline:
 
         documents = []
         metadatas = []
+        ids = []
 
         for i, c in enumerate(chunks):
-            # SAFE extraction (prevents crash)
+            # safe extraction
             if isinstance(c, dict):
                 content = c.get("content", "")
                 metadata = c.get("metadata", {})
@@ -44,17 +46,13 @@ class RAGPipeline:
             if content.strip():
                 documents.append(content)
                 metadatas.append(metadata)
+                ids.append(f"doc_{len(ids)}")
 
         if not documents:
             return
 
-        # Generate embeddings
-        embeddings = self.embedding_model.encode(documents).tolist()
-
-        ids = [f"doc_{i}" for i in range(len(documents))]
-
+        # ❌ NO MANUAL EMBEDDINGS (Chroma handles it internally)
         self.collection.add(
-            embeddings=embeddings,
             documents=documents,
             metadatas=metadatas,
             ids=ids
@@ -67,23 +65,22 @@ class RAGPipeline:
         if not query_text:
             return {"documents": [[]]}
 
-        query_embedding = self.embedding_model.encode([query_text]).tolist()
-
         results = self.collection.query(
-            query_embeddings=query_embedding,
+            query_texts=[query_text],
             n_results=n_results
         )
 
         return results
 
     # ----------------------------
-    # RESET COLLECTION (SAFE)
+    # RESET COLLECTION
     # ----------------------------
     def clear_collection(self):
         try:
             self.client.delete_collection(self.collection.name)
             self.collection = self.client.get_or_create_collection(
-                name=self.collection.name
+                name=self.collection.name,
+                embedding_function=self.embedding_function
             )
         except Exception as e:
             print("Clear collection error:", e)
