@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:8000";
+const API_URL = "https://your-buddy-2.onrender.com";
 
 // Elements
 const dropArea = document.getElementById("dropArea");
