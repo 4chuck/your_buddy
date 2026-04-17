@@ -1,3 +1,6 @@
+PyPDF2==3.0.1
+python-docx
+python-pptx
 fastapi
 uvicorn[standard]
 pydantic
