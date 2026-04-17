@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StudyAI - Premium AI Assistant</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+    />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- Sidebar - File Upload & Tools -->
+      <aside class="sidebar">
+        <!-- Logo -->
+        <div class="logo-section">
+          <div class="logo">
+            <i class="fas fa-sparkles"></i>
+            <div>
+              <h1>Study<span class="gradient-text">AI</span></h1>
+              <p class="logo-subtitle">Premium Learning Assistant</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Upload Section -->
+        <div class="upload-container">
+          <div class="section-header">
+            <i class="fas fa-cloud-upload-alt"></i>
+            <span>Upload Documents</span>
+          </div>
+
+          <!-- Drag & Drop Area -->
+          <div class="drop-area" id="dropArea">
+            <div class="drop-icon">
+              <i class="fas fa-file-import"></i>
+            </div>
+            <p class="drop-title">Drag files here</p>
+            <p class="drop-subtitle">or</p>
+            <label for="fileUpload" class="upload-btn-primary">
+              <i class="fas fa-plus"></i>
+              Browse Files
+            </label>
+            <input type="file" id="fileUpload" accept="*/*" multiple hidden />
+            <p class="drop-formats">PDF, DOCX, PPTX, TXT, and more</p>
+          </div>
+
+          <!-- Selected Files List -->
+          <div id="selectedFilesList" class="selected-files hidden">
+            <div class="files-header">
+              <i class="fas fa-check-circle"></i>
+              <span id="filesCount">0 files selected</span>
+            </div>
+          </div>
+
+          <!-- Upload Button -->
+          <button
+            id="uploadFilesBtn"
+            class="upload-btn-submit hidden"
+            type="button"
+          >
+            <i class="fas fa-upload"></i>
+            <span>Upload & Process</span>
+          </button>
+
+          <!-- Upload Status -->
+          <div id="uploadStatus" class="upload-status hidden">
+            <div class="spinner"></div>
+            <span>Processing your files...</span>
+          </div>
+
+          <!-- File Info -->
+          <div id="fileInfo" class="file-info hidden">
+            <div class="success-badge">
+              <i class="fas fa-check-circle"></i>
+              <span>Ready to analyze</span>
+            </div>
+            <p id="fileName" class="file-name">document.pdf</p>
+          </div>
+        </div>
+
+        <!-- Tools Section -->
+        <div class="tools-container hidden" id="toolsSection">
+          <div class="section-header">
+            <i class="fas fa-toolbox"></i>
+            <span>Study Tools</span>
+          </div>
+
+          <div class="tools-grid">
+            <button
+              class="tool-btn active"
+              data-mode="qa"
+              title="Ask questions about your documents"
+            >
+              <div class="tool-icon">
+                <i class="fas fa-circle-question"></i>
+              </div>
+              <span>Q&A</span>
+            </button>
+            <button
+              class="tool-btn"
+              data-mode="quiz"
+              title="Generate quizzes for self-assessment"
+            >
+              <div class="tool-icon">
+                <i class="fas fa-list-check"></i>
+              </div>
+              <span>Quiz</span>
+            </button>
+            <button
+              class="tool-btn"
+              data-mode="simplify"
+              title="Explain complex topics simply"
+            >
+              <div class="tool-icon">
+                <i class="fas fa-lightbulb"></i>
+              </div>
+              <span>Simplify</span>
+            </button>
+            <button
+              class="tool-btn"
+              data-mode="agent"
+              title="Handle multi-step tasks"
+            >
+              <div class="tool-icon">
+                <i class="fas fa-robot"></i>
+              </div>
+              <span>Agent</span>
+            </button>
+          </div>
+
+          <div class="mode-description" id="modeDescription">
+            Ask any question about your documents
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="sidebar-footer">
+          <p>Powered by AI</p>
+        </div>
+      </aside>
+
+      <!-- Main Chat Area -->
+      <main class="chat-container">
+        <!-- Header -->
+        <header class="chat-header">
+          <div class="header-content">
+            <h2>AI Assistant</h2>
+            <span id="currentModeBadge" class="mode-badge">Q&A Mode</span>
+          </div>
+          <div class="header-info">
+            <span class="status-indicator" id="statusIndicator">Ready</span>
+          </div>
+        </header>
+
+        <!-- Chat History -->
+        <div class="chat-history" id="chatHistory">
+          <div class="welcome-message">
+            <div class="welcome-icon">
+              <i class="fas fa-star"></i>
+            </div>
+            <h3>Welcome to StudyAI</h3>
+            <p>
+              Upload a document to get started. Ask questions, generate quizzes,
+              or explore advanced analysis.
+            </p>
+          </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-section">
+          <form id="chatForm" class="chat-form">
+            <div class="input-wrapper">
+              <textarea
+                id="userInput"
+                placeholder="Ask me anything..."
+                rows="1"
+                disabled
+                class="message-input"
+              ></textarea>
+              <button
+                type="submit"
+                id="sendBtn"
+                disabled
+                class="send-btn"
+                title="Send message"
+              >
+                <i class="fas fa-paper-plane"></i>
+              </button>
+            </div>
+            <p class="input-hint">
+              Press Enter to send, Shift+Enter for new line
+            </p>
+          </form>
+        </div>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
