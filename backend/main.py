@@ -5,6 +5,10 @@ from typing import List, Dict, Any
 import os
 import io
 
+from fastapi import status
+from fastapi.responses import JSONResponse
+#remove backend. for render
+
 from utils import extract_text_from_file, chunk_text
 from rag_pipeline import RAGPipeline
 from agent import AIAgent
@@ -19,6 +23,8 @@ app.add_middleware(
         "http://localhost:5500",
         "http://127.0.0.1:5500",
         "https://4chuck.github.io",
+        "http://127.0.0.1:8000",
+        "http://localhost:3000",
         "https://your-buddy-phi.vercel.app"
     ],
     allow_credentials=True,
@@ -92,11 +98,13 @@ async def upload_files(files: List[UploadFile] = File(...)):
         }
 
     except Exception as e:
-        # IMPORTANT: prevents Render 502 crash loops
-        return {
+        return JSONResponse(
+        status_code=500,
+        content={
             "status": "error",
             "message": str(e)
         }
+    )
 
 # ---------------- QUERY ----------------
 @app.post("/query")
