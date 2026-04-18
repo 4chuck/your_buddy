@@ -1,4 +1,7 @@
-const API_URL = "https://your-buddy-2.onrender.com";
+const API_URL =
+  window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    ? "http://127.0.0.1:8000"
+    : "https://your-buddy-2.onrender.com";
 
 // Elements
 const dropArea = document.getElementById("dropArea");
@@ -40,7 +43,6 @@ const modeBadges = {
 
 // --- Setup Event Listeners ---
 
-// File Upload Trigger
 if (fileUpload) fileUpload.addEventListener("change", handleFileSelection);
 if (uploadFilesBtn) uploadFilesBtn.addEventListener("click", uploadSelectedFiles);
 
@@ -50,12 +52,15 @@ if (dropArea) {
     e.preventDefault();
     dropArea.classList.add("dragover");
   });
+
   dropArea.addEventListener("dragleave", () => {
     dropArea.classList.remove("dragover");
   });
+
   dropArea.addEventListener("drop", (e) => {
     e.preventDefault();
     dropArea.classList.remove("dragover");
+
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       selectedFiles = Array.from(e.dataTransfer.files);
       if (fileUpload) fileUpload.value = "";
@@ -68,21 +73,18 @@ if (dropArea) {
 if (toolBtns.length) {
   toolBtns.forEach((btn) => {
     btn.addEventListener("click", () => {
-      if (!fileUploaded) return; // wait until file is uploaded
+      if (!fileUploaded) return;
 
       toolBtns.forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
 
-      currentMode = btn.dataset.mode;
-      if (currentModeBadge) currentModeBadge.textContent = modeBadges[currentMode];
-      if (modeDescription) modeDescription.textContent = modeDescriptions[currentMode];
+      currentMode = btn.dataset.mode || "qa";
+      if (currentModeBadge) currentModeBadge.textContent = modeBadges[currentMode] || "Q&A Mode";
+      if (modeDescription) modeDescription.textContent = modeDescriptions[currentMode] || "";
 
-      // Context-aware placeholders
       if (currentMode === "qa") userInput.placeholder = "Ask a question...";
-      if (currentMode === "quiz")
-        userInput.placeholder = "e.g., 'Chapter 1' or 'Photosynthesis'";
-      if (currentMode === "simplify")
-        userInput.placeholder = "What should I simplify?";
+      if (currentMode === "quiz") userInput.placeholder = "e.g., 'Chapter 1' or 'Photosynthesis'";
+      if (currentMode === "simplify") userInput.placeholder = "What should I simplify?";
       if (currentMode === "agent") userInput.placeholder = "Describe the task...";
 
       userInput.focus();
@@ -98,7 +100,6 @@ if (chatForm && userInput && sendBtn) {
     await processUserQuery(userInput.value.trim());
   });
 
-  // Enter to submit (Shift+Enter for new line)
   userInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -106,7 +107,6 @@ if (chatForm && userInput && sendBtn) {
     }
   });
 
-  // Resize textarea automatically
   userInput.addEventListener("input", function () {
     this.style.height = "auto";
     this.style.height = this.scrollHeight + "px";
@@ -138,23 +138,17 @@ function renderSelectedFiles() {
     uploadFilesBtn.disabled = false;
   }
 
-  // Update file count
-  const filesCountEl = document.getElementById("filesCount");
-  if (filesCountEl) {
-    filesCountEl.textContent = `${selectedFiles.length} file${selectedFiles.length !== 1 ? 's' : ''} selected`;
-  }
-
-  // Render individual files
-  const filesContainer = selectedFilesList.querySelector('.files-header');
-  let filesHtml = `<div class="files-header">
-    <i class="fas fa-check-circle"></i>
-    <span id="filesCount">${selectedFiles.length} file${selectedFiles.length !== 1 ? 's' : ''} selected</span>
-  </div>`;
+  let filesHtml = `
+    <div class="files-header">
+      <i class="fas fa-check-circle"></i>
+      <span id="filesCount">${selectedFiles.length} file${selectedFiles.length !== 1 ? "s" : ""} selected</span>
+    </div>
+  `;
 
   selectedFiles.forEach((file, index) => {
     filesHtml += `
       <div class="selected-file-item">
-        <span title="${file.name}">${escapeHtml(file.name)}</span>
+        <span title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
         <button type="button" class="remove-file-btn" onclick="removeSelectedFile(${index})">Remove</button>
       </div>
     `;
@@ -177,7 +171,6 @@ async function uploadSelectedFiles() {
     return;
   }
 
-  // UI Updates
   if (dropArea) dropArea.classList.add("hidden");
   if (uploadStatus) uploadStatus.classList.remove("hidden");
 
@@ -190,28 +183,37 @@ async function uploadSelectedFiles() {
       body: formData,
     });
 
-    const result = await response.json();
-
-    if (response.ok) {
-      if (uploadStatus) uploadStatus.classList.add("hidden");
-      selectedFiles = [];
-      if (fileUpload) fileUpload.value = "";
-      renderSelectedFiles();
-      if (fileInfo) fileInfo.classList.remove("hidden");
-      if (fileName) fileName.textContent = result.message;
-      if (toolsSection) toolsSection.classList.remove("hidden");
-
-      // Enable inputs
-      if (userInput) userInput.disabled = false;
-      if (sendBtn) sendBtn.disabled = false;
-      fileUploaded = true;
-
-      appendBotMessage(
-        "Files processed successfully! The knowledge base is ready. What would you like to do?",
-      );
-    } else {
-      throw new Error(result.detail || "Upload failed");
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      const raw = await response.text();
+      throw new Error(raw || "Invalid server response");
     }
+
+    if (!response.ok || result.status === "error") {
+      throw new Error(result.message || result.detail || "Upload failed");
+    }
+
+    if (uploadStatus) uploadStatus.classList.add("hidden");
+
+    selectedFiles = [];
+    if (fileUpload) fileUpload.value = "";
+    renderSelectedFiles();
+
+    if (fileInfo) fileInfo.classList.remove("hidden");
+    if (fileName) {
+      fileName.textContent = `Uploaded ${result.files_received || 1} file(s), created ${result.chunks_created || 0} chunks`;
+    }
+    if (toolsSection) toolsSection.classList.remove("hidden");
+
+    if (userInput) userInput.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+    fileUploaded = true;
+
+    appendBotMessage(
+      "Files processed successfully! The knowledge base is ready. What would you like to do?"
+    );
   } catch (error) {
     console.error(error);
     alert(`Error uploading files: ${error.message}`);
@@ -241,40 +243,72 @@ async function processUserQuery(query) {
       }),
     });
 
-    const result = await response.json();
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      const raw = await response.text();
+      throw new Error(raw || "Invalid server response");
+    }
+
     removeLoadingMessage(loadingId);
 
-    if (response.ok) {
-      if (currentMode === "quiz") {
-        try {
-          let jsonStr = result.response.trim();
-          if (jsonStr.startsWith("```json")) {
-            jsonStr = jsonStr
-              .replace(/```json/g, "")
-              .replace(/```/g, "")
-              .trim();
-          }
-          const quizData = JSON.parse(jsonStr);
-          renderInteractiveQuiz(quizData);
-        } catch (e) {
-          console.error("Failed to parse quiz JSON", e);
-          appendBotMessage("Here is the generated quiz:\n\n" + result.response); // Fallback
-        }
+    if (!response.ok) {
+      throw new Error(result.message || result.detail || "Failed to process query");
+    }
+
+    if (result.status === "error") {
+      appendBotMessage(result.message || "Something went wrong.");
+      return;
+    }
+
+    const payload = result.response;
+
+    if (currentMode === "quiz") {
+      const quizData = parseQuizResponse(payload);
+      if (Array.isArray(quizData)) {
+        renderInteractiveQuiz(quizData);
       } else {
-        appendBotMessage(result.response);
+        appendBotMessage(
+          "⚠️ Server returned invalid quiz format:\n\n" + String(payload || "")
+        );
       }
     } else {
-      appendBotMessage(`Error: ${result.detail || "Failed to process query"}`);
+      appendBotMessage(String(payload || "No response received."));
     }
   } catch (error) {
     removeLoadingMessage(loadingId);
-    appendBotMessage(
-      `Connection Error: Make sure the FastAPI backend is running.`,
-    );
+    console.error("Request failed:", error);
+    appendBotMessage("⚠️ Server Error:\n\n" + (error.message || "Something went wrong."));
   } finally {
     isProcessing = false;
     sendBtn.disabled = false;
     userInput.focus();
+  }
+}
+
+function parseQuizResponse(payload) {
+  if (!payload) return null;
+
+  if (Array.isArray(payload)) return payload;
+  if (typeof payload === "object") {
+    if (payload.status === "error") return payload;
+    if (Array.isArray(payload.data)) return payload.data;
+  }
+
+  if (typeof payload !== "string") return null;
+
+  let jsonStr = payload.trim();
+
+  if (jsonStr.startsWith("```")) {
+    jsonStr = jsonStr.replace(/```json|```/g, "").trim();
+  }
+
+  try {
+    return JSON.parse(jsonStr);
+  } catch (err) {
+    console.error("Invalid JSON:", jsonStr);
+    return null;
   }
 }
 
@@ -298,7 +332,11 @@ function renderInteractiveQuiz(quizData) {
         <div class="quiz-options">
     `;
     q.options.forEach((opt, oIndex) => {
-      quizHtml += `<button class="quiz-option" onclick="selectQuizOption(this, ${qIndex}, ${oIndex})"><span class="opt-label">${String.fromCharCode(65 + oIndex)}</span> ${escapeHtml(opt)}</button>`;
+      quizHtml += `
+        <button class="quiz-option" onclick="selectQuizOption(this, ${qIndex}, ${oIndex})">
+          <span class="opt-label">${String.fromCharCode(65 + oIndex)}</span> ${escapeHtml(opt)}
+        </button>
+      `;
     });
     quizHtml += `</div></div>`;
   });
@@ -318,7 +356,7 @@ function renderInteractiveQuiz(quizData) {
 window.selectQuizOption = function (btn, qIndex, oIndex) {
   const optionsContainer = btn.parentElement;
   Array.from(optionsContainer.children).forEach((child) =>
-    child.classList.remove("selected"),
+    child.classList.remove("selected")
   );
   btn.classList.add("selected");
   optionsContainer.dataset.answered = oIndex;
@@ -343,10 +381,10 @@ window.submitQuiz = function (submitBtn, totalQuestions) {
   }
 
   questions.forEach((q) => {
-    const correctIndex = parseInt(q.dataset.answer);
+    const correctIndex = parseInt(q.dataset.answer, 10);
     const optionsContainer = q.querySelector(".quiz-options");
     const options = optionsContainer.querySelectorAll(".quiz-option");
-    const answeredIndex = parseInt(optionsContainer.dataset.answered);
+    const answeredIndex = parseInt(optionsContainer.dataset.answered, 10);
 
     options.forEach((opt, idx) => {
       opt.disabled = true;
@@ -376,7 +414,7 @@ function appendUserMessage(text) {
   div.className = "message user-message";
   div.innerHTML = `
     <div class="avatar"><i class="fas fa-user"></i></div>
-    <div class="content"><p>${escapeHtml(text)}</p></div>
+    <div class="content"><p>${escapeHtml(String(text))}</p></div>
   `;
   chatHistory.appendChild(div);
   scrollToBottom();
@@ -386,18 +424,17 @@ function appendBotMessage(text) {
   const div = document.createElement("div");
   div.className = "message bot-message";
 
-  // Parse markdown (we included marked.js in html)
-  let formattedText = `<p>${escapeHtml(text)}</p>`;
+  let formattedText = `<p>${escapeHtml(String(text))}</p>`;
   if (typeof marked !== "undefined") {
     try {
       if (typeof marked.parse === "function") {
-        formattedText = marked.parse(text);
+        formattedText = marked.parse(String(text));
       } else if (typeof marked === "function") {
-        formattedText = marked(text);
+        formattedText = marked(String(text));
       }
     } catch (error) {
       console.error("Markdown parse failed:", error);
-      formattedText = `<p>${escapeHtml(text)}</p>`;
+      formattedText = `<p>${escapeHtml(String(text))}</p>`;
     }
   }
 
@@ -437,7 +474,7 @@ function scrollToBottom() {
 }
 
 function escapeHtml(unsafe) {
-  return unsafe
+  return String(unsafe)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")

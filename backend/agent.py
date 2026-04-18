@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import traceback
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -57,14 +58,16 @@ def _strip_json_fences(text: str) -> str:
 
 
 def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars]
+    return text if len(text) <= max_chars else text[:max_chars]
 
 
 class AIAgent:
     def __init__(self):
         self.api_key = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set")
+
+        self.client = genai.Client(api_key=self.api_key)
 
         self.max_retries = _env_int("GEMINI_MAX_RETRIES", default=2)
         self.retry_delay = _env_float("GEMINI_RETRY_DELAY", default=1.0)
@@ -84,10 +87,26 @@ class AIAgent:
             ]
         )
 
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set")
+    def _build_config(
+        self,
+        *,
+        system_instruction: Optional[str] = None,
+        response_json_schema: Optional[dict[str, Any]] = None,
+    ) -> types.GenerateContentConfig:
+        kwargs: dict[str, Any] = {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "top_k": self.top_k,
+        }
 
-        self.client = genai.Client(api_key=self.api_key)
+        if system_instruction:
+            kwargs["system_instruction"] = system_instruction
+
+        if response_json_schema is not None:
+            kwargs["response_mime_type"] = "application/json"
+            kwargs["response_json_schema"] = response_json_schema
+
+        return types.GenerateContentConfig(**kwargs)
 
     def _generate(
         self,
@@ -95,26 +114,17 @@ class AIAgent:
         *,
         system_instruction: Optional[str] = None,
         response_json_schema: Optional[dict[str, Any]] = None,
+        expect_json: bool = False,
     ) -> str:
         last_error: Optional[Exception] = None
 
         for model_name in self.model_candidates:
             for attempt in range(self.max_retries):
                 try:
-                    config_kwargs: dict[str, Any] = {
-                        "temperature": self.temperature,
-                        "top_p": self.top_p,
-                        "top_k": self.top_k,
-                    }
-
-                    if system_instruction:
-                        config_kwargs["system_instruction"] = system_instruction
-
-                    if response_json_schema is not None:
-                        config_kwargs["response_mime_type"] = "application/json"
-                        config_kwargs["response_json_schema"] = response_json_schema
-
-                    config = types.GenerateContentConfig(**config_kwargs)
+                    config = self._build_config(
+                        system_instruction=system_instruction,
+                        response_json_schema=response_json_schema,
+                    )
 
                     response = self.client.models.generate_content(
                         model=model_name,
@@ -126,26 +136,51 @@ class AIAgent:
                     if text and text.strip():
                         return text.strip()
 
-                    return "Empty response"
+                    if expect_json:
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "Empty response from AI",
+                            }
+                        )
+
+                    return "Something went wrong. Please try again."
 
                 except Exception as e:
                     last_error = e
-                    msg = str(e).lower()
-
-                    if (
-                        "not found" in msg
-                        or "unsupported" in msg
-                        or "404" in msg
-                        or "is not found for api version" in msg
-                    ):
-                        break
+                    logger.warning(
+                        "Gemini attempt failed (model=%s, attempt=%s/%s): %s",
+                        model_name,
+                        attempt + 1,
+                        self.max_retries,
+                        str(e),
+                    )
 
                     if attempt < self.max_retries - 1:
                         time.sleep(self.retry_delay)
 
         if last_error:
-            logger.error("Gemini generation failed: %s", last_error)
+            logger.error("Gemini generation failed: %s", str(last_error))
+            traceback.print_exc()
+
+            if expect_json:
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": str(last_error),
+                    }
+                )
+
             return "Something went wrong. Please try again."
+
+        if expect_json:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "Unknown error",
+                }
+            )
+
         return "Something went wrong. Please try again."
 
     def ask_question(self, query: str, context: str) -> str:
@@ -184,7 +219,7 @@ ANSWER:
                         "minItems": 4,
                         "maxItems": 4,
                     },
-                    "answer_index": {"type": "integer"},
+                    "answer_index": {"type": "integer", "minimum": 0, "maximum": 3},
                 },
                 "required": ["question", "options", "answer_index"],
                 "additionalProperties": False,
@@ -193,29 +228,56 @@ ANSWER:
 
         prompt = f"""
 Create {num_questions} MCQs from the context.
+
 Return ONLY valid JSON.
 
 Context:
 {context}
 """
+
         result = self._generate(
             prompt,
             response_json_schema=schema,
+            expect_json=True,
         )
 
         try:
             cleaned = _strip_json_fences(result)
             parsed = json.loads(cleaned)
+
+            if isinstance(parsed, dict) and parsed.get("status") == "error":
+                return json.dumps(parsed, ensure_ascii=False)
+
+            if not isinstance(parsed, list):
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "message": "Quiz response was not a JSON array",
+                    },
+                    ensure_ascii=False,
+                )
+
             return json.dumps(parsed, indent=2, ensure_ascii=False)
-        except Exception:
-            return result
+
+        except Exception as e:
+            logger.error("Quiz JSON parse failed: %s", str(e))
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": "Invalid quiz JSON from AI",
+                },
+                ensure_ascii=False,
+            )
 
     def explain_simply(self, context: str) -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
-Explain in simple bullet points:
+Explain the following in simple bullet points.
 
+Use short sentences and simple language.
+
+Context:
 {context}
 """
         return self._generate(prompt)
@@ -229,6 +291,6 @@ Task: {task}
 Context:
 {context}
 
-Return step-by-step structured answer.
+Return a structured step-by-step response.
 """
         return self._generate(prompt)

@@ -1,15 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 import os
 import io
 import logging
-from fastapi import Request
 
-from fastapi.responses import JSONResponse
-
-#  Rate limiting
+# Rate limiting
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -35,7 +33,10 @@ app.state.limiter = limiter
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
-        content={"error": "Too many requests. Please slow down."},
+        content={
+            "status": "error",
+            "message": "Too many requests. Please slow down."
+        },
     )
 
 # ---------------- CORS ----------------
@@ -58,7 +59,7 @@ app.add_middleware(
 rag = RAGPipeline()
 agent = AIAgent()
 
-# ---------------- MEMORY (simple) ----------------
+# ---------------- MEMORY ----------------
 chat_memory: Dict[str, List[Dict[str, str]]] = {}
 
 # ---------------- REQUEST MODEL ----------------
@@ -91,7 +92,6 @@ async def upload_files(request: Request, files: List[UploadFile] = File(...)):
         total_chunks = 0
 
         for file in files:
-
             if not file.filename or not is_valid_file(file.filename):
                 raise HTTPException(
                     status_code=400,
@@ -125,6 +125,7 @@ async def upload_files(request: Request, files: List[UploadFile] = File(...)):
 
     except Exception as e:
         logging.error(f"Upload error: {str(e)}")
+
         return JSONResponse(
             status_code=500,
             content={
@@ -132,6 +133,7 @@ async def upload_files(request: Request, files: List[UploadFile] = File(...)):
                 "message": "File processing failed"
             }
         )
+
 # ---------------- QUERY ----------------
 @app.post("/query")
 @limiter.limit("5/minute")
@@ -139,8 +141,13 @@ async def query(req: QueryRequest, request: Request):
     try:
         logging.info(f"Query received: {req.query}")
 
-        # ---------------- MEMORY ----------------
-        session_id = request.client.host if request.client else "unknown"
+        # ---------------- SAFE SESSION ID (FIXED) ----------------
+        session_id = (
+            request.client.host
+            if request.client and request.client.host
+            else "unknown"
+        )
+
         history = chat_memory.get(session_id, [])
 
         # ---------------- RAG ----------------
@@ -165,7 +172,10 @@ async def query(req: QueryRequest, request: Request):
         context = "\n\n".join(context_parts)
 
         if not context:
-            return {"response": "No relevant context found in uploaded documents."}
+            return {
+                "status": "error",
+                "message": "No relevant context found in uploaded documents."
+            }
 
         # ---------------- AGENT MODES ----------------
         if req.mode == "quiz":
@@ -187,13 +197,21 @@ async def query(req: QueryRequest, request: Request):
         history.append({"role": "user", "content": req.query})
         history.append({"role": "assistant", "content": response})
 
-        chat_memory[session_id] = history[-10:]  # keep last 10 messages
+        chat_memory[session_id] = history[-10:]
 
-        return {"response": response}
+        # ---------------- SAFE RESPONSE ----------------
+        return {
+            "status": "success",
+            "response": response
+        }
 
     except Exception as e:
         logging.error(f"Query error: {str(e)}")
 
-        return {
-            "response": "Something went wrong. Please try again."
-        }
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e)
+            }
+        )
