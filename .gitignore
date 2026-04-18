@@ -1,7 +1,14 @@
 .venv
 venv
-backend/.env
 .env
+backend/.env
+backend/serviceAccountKey.json
+serviceAccountKey.json
+*serviceAccount*.json
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.7z
 # Logs
 logs
 *.log
@@ -66,10 +73,5 @@ node_modules/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
-.env
-
 # dataconnect generated files
 .dataconnect
-
-venv

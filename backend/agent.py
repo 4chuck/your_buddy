@@ -3,11 +3,23 @@ import logging
 import os
 import time
 import traceback
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+# Optional Firebase support:
+# If backend/firebase_config.py exists and exposes `db`, the agent will store
+# chats/quizzes there. If not, the app still runs normally.
+try:
+    try:
+        from backend.firebase_config import db as firestore_db  # type: ignore
+    except ImportError:
+        from firebase_config import db as firestore_db  # type: ignore
+except Exception:
+    firestore_db = None
 
 # Load local .env; Render environment variables still take priority.
 load_dotenv()
@@ -77,13 +89,15 @@ class AIAgent:
         self.top_k = _env_int("GEMINI_TOP_K", default=40)
 
         self.max_context_chars = _env_int("GEMINI_MAX_CONTEXT_CHARS", default=12000)
+        self.max_saved_chars = _env_int("GEMINI_MAX_SAVED_CHARS", default=6000)
+        self.firestore_ttl_days = _env_int("FIRESTORE_TTL_DAYS", default=7)
 
-        preferred_model = _first_env("GEMINI_MODEL")
+        self.persist_enabled = _first_env("ENABLE_FIRESTORE_STORAGE", default="1") != "0"
         self.model_candidates = _dedupe_keep_order(
             [
-                preferred_model,
                 "gemini-2.5-flash",
                 "gemini-2.5-pro",
+                _first_env("GEMINI_MODEL"),
             ]
         )
 
@@ -107,6 +121,26 @@ class AIAgent:
             kwargs["response_json_schema"] = response_json_schema
 
         return types.GenerateContentConfig(**kwargs)
+
+    def _firestore_save(self, collection: str, payload: dict[str, Any]) -> None:
+        if not self.persist_enabled or firestore_db is None:
+            return
+
+        try:
+            now = datetime.now(timezone.utc)
+            doc = dict(payload)
+            doc["created_at"] = now
+            if self.firestore_ttl_days > 0:
+                doc["expires_at"] = now + timedelta(days=self.firestore_ttl_days)
+
+            # Keep document size bounded.
+            for key in ("query", "response", "context", "prompt", "raw_output"):
+                if key in doc and isinstance(doc[key], str):
+                    doc[key] = _truncate(doc[key], self.max_saved_chars)
+
+            firestore_db.collection(collection).add(doc)
+        except Exception as e:
+            logger.warning("Firestore save failed for %s: %s", collection, str(e))
 
     def _generate(
         self,
@@ -141,7 +175,8 @@ class AIAgent:
                             {
                                 "status": "error",
                                 "message": "Empty response from AI",
-                            }
+                            },
+                            ensure_ascii=False,
                         )
 
                     return "Something went wrong. Please try again."
@@ -168,7 +203,8 @@ class AIAgent:
                     {
                         "status": "error",
                         "message": str(last_error),
-                    }
+                    },
+                    ensure_ascii=False,
                 )
 
             return "Something went wrong. Please try again."
@@ -178,12 +214,13 @@ class AIAgent:
                 {
                     "status": "error",
                     "message": "Unknown error",
-                }
+                },
+                ensure_ascii=False,
             )
 
         return "Something went wrong. Please try again."
 
-    def ask_question(self, query: str, context: str) -> str:
+    def ask_question(self, query: str, context: str, user_id: str = "anonymous") -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
@@ -202,9 +239,26 @@ QUESTION:
 
 ANSWER:
 """
-        return self._generate(prompt)
+        response = self._generate(prompt)
 
-    def generate_quiz(self, context: str, num_questions: int = 5) -> str:
+        self._firestore_save(
+            "chat_logs",
+            {
+                "user_id": user_id,
+                "mode": "qa",
+                "query": query,
+                "context": context,
+                "response": response,
+            },
+        )
+        return response
+
+    def generate_quiz(
+        self,
+        context: str,
+        num_questions: int = 5,
+        user_id: str = "anonymous",
+    ) -> str:
         context = _truncate(context, self.max_context_chars)
 
         schema = {
@@ -229,12 +283,11 @@ ANSWER:
         prompt = f"""
 Create {num_questions} MCQs from the context.
 
-Return ONLY valid JSON.
+Return ONLY valid JSON. No markdown. No explanation.
 
 Context:
 {context}
 """
-
         result = self._generate(
             prompt,
             response_json_schema=schema,
@@ -246,30 +299,66 @@ Context:
             parsed = json.loads(cleaned)
 
             if isinstance(parsed, dict) and parsed.get("status") == "error":
+                self._firestore_save(
+                    "quiz_logs",
+                    {
+                        "user_id": user_id,
+                        "mode": "quiz",
+                        "context": context,
+                        "response": json.dumps(parsed, ensure_ascii=False),
+                    },
+                )
                 return json.dumps(parsed, ensure_ascii=False)
 
             if not isinstance(parsed, list):
-                return json.dumps(
+                error_obj = {
+                    "status": "error",
+                    "message": "Quiz response was not a JSON array",
+                }
+                self._firestore_save(
+                    "quiz_logs",
                     {
-                        "status": "error",
-                        "message": "Quiz response was not a JSON array",
+                        "user_id": user_id,
+                        "mode": "quiz",
+                        "context": context,
+                        "response": json.dumps(error_obj, ensure_ascii=False),
                     },
-                    ensure_ascii=False,
                 )
+                return json.dumps(error_obj, ensure_ascii=False)
 
-            return json.dumps(parsed, indent=2, ensure_ascii=False)
+            quiz_json = json.dumps(parsed, indent=2, ensure_ascii=False)
+
+            self._firestore_save(
+                "quiz_logs",
+                {
+                    "user_id": user_id,
+                    "mode": "quiz",
+                    "num_questions": num_questions,
+                    "context": context,
+                    "response": quiz_json,
+                },
+            )
+            return quiz_json
 
         except Exception as e:
             logger.error("Quiz JSON parse failed: %s", str(e))
-            return json.dumps(
-                {
-                    "status": "error",
-                    "message": "Invalid quiz JSON from AI",
-                },
-                ensure_ascii=False,
-            )
+            error_obj = {
+                "status": "error",
+                "message": "Invalid quiz JSON from AI",
+            }
 
-    def explain_simply(self, context: str) -> str:
+            self._firestore_save(
+                "quiz_logs",
+                {
+                    "user_id": user_id,
+                    "mode": "quiz",
+                    "context": context,
+                    "response": json.dumps(error_obj, ensure_ascii=False),
+                },
+            )
+            return json.dumps(error_obj, ensure_ascii=False)
+
+    def explain_simply(self, context: str, user_id: str = "anonymous") -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
@@ -280,9 +369,20 @@ Use short sentences and simple language.
 Context:
 {context}
 """
-        return self._generate(prompt)
+        response = self._generate(prompt)
 
-    def handle_agent_task(self, task: str, context: str) -> str:
+        self._firestore_save(
+            "chat_logs",
+            {
+                "user_id": user_id,
+                "mode": "simplify",
+                "context": context,
+                "response": response,
+            },
+        )
+        return response
+
+    def handle_agent_task(self, task: str, context: str, user_id: str = "anonymous") -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
@@ -293,4 +393,16 @@ Context:
 
 Return a structured step-by-step response.
 """
-        return self._generate(prompt)
+        response = self._generate(prompt)
+
+        self._firestore_save(
+            "chat_logs",
+            {
+                "user_id": user_id,
+                "mode": "agent",
+                "query": task,
+                "context": context,
+                "response": response,
+            },
+        )
+        return response

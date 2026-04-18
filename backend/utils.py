@@ -119,29 +119,48 @@ def extract_text_from_file(file_path, file_stream=None):
     return []
 
 
-def chunk_text(text_data, chunk_size=900, overlap=150):
+def chunk_text(text_data, chunk_size=900, overlap=150, max_chunks=None):
+    if not text_data or not isinstance(text_data, list):
+        return []
+
+    if max_chunks is not None:
+        try:
+            max_chunks = int(max_chunks)
+        except Exception:
+            max_chunks = None
+
+    if max_chunks is not None and max_chunks <= 0:
+        return []
+
     chunks = []
+    step = max(1, int(chunk_size) - int(overlap))
 
     for item in text_data:
-        text = item.get("text", "")
-        page = item.get("page", 1)
-
-        if not isinstance(text, str):
+        if not isinstance(item, dict):
             continue
 
+        text = str(item.get("text") or "")
+        page = item.get("page", 1)
+
         text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
 
         start = 0
         while start < len(text):
-            end = start + chunk_size
+            end = start + int(chunk_size)
             chunk = text[start:end].strip()
 
             if len(chunk) > 50:
-                chunks.append({
-                    "content": chunk,
-                    "metadata": {"page": page}
-                })
+                chunks.append(
+                    {
+                        "content": chunk,
+                        "metadata": {"page": page},
+                    }
+                )
+                if max_chunks is not None and len(chunks) >= max_chunks:
+                    return chunks
 
-            start += chunk_size - overlap
+            start += step
 
     return chunks
