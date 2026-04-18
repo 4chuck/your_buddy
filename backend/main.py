@@ -1,22 +1,44 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 import os
 import io
+import logging
+from fastapi import Request
 
-from fastapi import status
 from fastapi.responses import JSONResponse
-#remove backend. for render
+
+#  Rate limiting
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from utils import extract_text_from_file, chunk_text
 from rag_pipeline import RAGPipeline
 from agent import AIAgent
 
+# ---------------- LOGGING ----------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+
 # ---------------- APP ----------------
 app = FastAPI(title="NotebookLM Clone API")
 
-# ---------------- CORS (PRODUCTION SAFE) ----------------
+# ---------------- RATE LIMITER ----------------
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Too many requests. Please slow down."},
+    )
+
+# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -35,6 +57,9 @@ app.add_middleware(
 # ---------------- INIT ----------------
 rag = RAGPipeline()
 agent = AIAgent()
+
+# ---------------- MEMORY (simple) ----------------
+chat_memory: Dict[str, List[Dict[str, str]]] = {}
 
 # ---------------- REQUEST MODEL ----------------
 class QueryRequest(BaseModel):
@@ -59,37 +84,38 @@ def is_valid_file(filename: str) -> bool:
 
 # ---------------- UPLOAD ----------------
 @app.post("/upload")
-async def upload_files(files: List[UploadFile] = File(...)):
+@limiter.limit("10/minute")
+async def upload_files(request: Request, files: List[UploadFile] = File(...)):
     try:
         all_chunks = []
         total_chunks = 0
 
         for file in files:
 
-            # skip invalid files safely
             if not file.filename or not is_valid_file(file.filename):
-                raise HTTPException(status_code=400, detail=f"Invalid file: {file.filename}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid file: {file.filename}"
+                )
 
-            # read file safely (Render compatible)
             file_bytes = await file.read()
             file_stream = io.BytesIO(file_bytes)
 
-            # extract text
             text_data = extract_text_from_file(file.filename, file_stream)
 
             if not text_data:
                 continue
 
-            # chunking
             chunks = chunk_text(text_data)
 
             if isinstance(chunks, list) and chunks:
                 all_chunks.extend(chunks)
                 total_chunks += len(chunks)
 
-        # store in vector DB
         if all_chunks:
             rag.add_documents(all_chunks)
+
+        logging.info(f"Uploaded {len(files)} files → {total_chunks} chunks")
 
         return {
             "status": "success",
@@ -98,23 +124,29 @@ async def upload_files(files: List[UploadFile] = File(...)):
         }
 
     except Exception as e:
+        logging.error(f"Upload error: {str(e)}")
         return JSONResponse(
-        status_code=500,
-        content={
-            "status": "error",
-            "message": str(e)
-        }
-    )
-
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "File processing failed"
+            }
+        )
 # ---------------- QUERY ----------------
 @app.post("/query")
-async def query(req: QueryRequest):
+@limiter.limit("5/minute")
+async def query(req: QueryRequest, request: Request):
     try:
-        results = rag.query(req.query, n_results=5)
+        logging.info(f"Query received: {req.query}")
 
+        # ---------------- MEMORY ----------------
+        session_id = request.client.host if request.client else "unknown"
+        history = chat_memory.get(session_id, [])
+
+        # ---------------- RAG ----------------
+        results = rag.query(req.query, n_results=5)
         docs = results.get("documents", [])
 
-        # ---------------- SAFE FLATTENING ----------------
         flat_docs = []
 
         if isinstance(docs, list):
@@ -124,7 +156,6 @@ async def query(req: QueryRequest):
                 elif isinstance(d, str):
                     flat_docs.append(d)
 
-        # clean context safely
         context_parts = [
             str(d).strip()
             for d in flat_docs
@@ -136,25 +167,33 @@ async def query(req: QueryRequest):
         if not context:
             return {"response": "No relevant context found in uploaded documents."}
 
-        # ---------------- MODES ----------------
+        # ---------------- AGENT MODES ----------------
         if req.mode == "quiz":
-            return {
-                "response": agent.generate_quiz(
-                    context,
-                    req.options.get("num_questions", 5)
-                )
-            }
+            response = agent.generate_quiz(
+                context,
+                req.options.get("num_questions", 5)
+            )
 
-        if req.mode == "simplify":
-            return {"response": agent.explain_simply(context)}
+        elif req.mode == "simplify":
+            response = agent.explain_simply(context)
 
-        if req.mode == "agent":
-            return {"response": agent.handle_agent_task(req.query, context)}
+        elif req.mode == "agent":
+            response = agent.handle_agent_task(req.query, context)
 
-        return {"response": agent.ask_question(req.query, context)}
+        else:
+            response = agent.ask_question(req.query, context)
+
+        # ---------------- SAVE MEMORY ----------------
+        history.append({"role": "user", "content": req.query})
+        history.append({"role": "assistant", "content": response})
+
+        chat_memory[session_id] = history[-10:]  # keep last 10 messages
+
+        return {"response": response}
 
     except Exception as e:
-        # NEVER crash server → prevents 502 + CORS confusion
+        logging.error(f"Query error: {str(e)}")
+
         return {
-            "response": f"Server error: {str(e)}"
+            "response": "Something went wrong. Please try again."
         }

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 from typing import Any, Optional
@@ -9,6 +10,9 @@ from google.genai import types
 
 # Load local .env; Render environment variables still take priority.
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def _first_env(*names: str, default: Optional[str] = None) -> Optional[str]:
@@ -21,12 +25,18 @@ def _first_env(*names: str, default: Optional[str] = None) -> Optional[str]:
 
 def _env_int(*names: str, default: int) -> int:
     value = _first_env(*names)
-    return int(value) if value is not None else default
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
 
 
 def _env_float(*names: str, default: float) -> float:
     value = _first_env(*names)
-    return float(value) if value is not None else default
+    try:
+        return float(value) if value is not None else default
+    except ValueError:
+        return default
 
 
 def _dedupe_keep_order(items: list[Optional[str]]) -> list[str]:
@@ -46,6 +56,12 @@ def _strip_json_fences(text: str) -> str:
     return cleaned
 
 
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
 class AIAgent:
     def __init__(self):
         self.api_key = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
@@ -56,6 +72,8 @@ class AIAgent:
         self.temperature = _env_float("GEMINI_TEMPERATURE", default=0.4)
         self.top_p = _env_float("GEMINI_TOP_P", default=0.9)
         self.top_k = _env_int("GEMINI_TOP_K", default=40)
+
+        self.max_context_chars = _env_int("GEMINI_MAX_CONTEXT_CHARS", default=12000)
 
         preferred_model = _first_env("GEMINI_MODEL")
         self.model_candidates = _dedupe_keep_order(
@@ -69,7 +87,6 @@ class AIAgent:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set")
 
-        # Current SDK client pattern.
         self.client = genai.Client(api_key=self.api_key)
 
     def _generate(
@@ -115,7 +132,6 @@ class AIAgent:
                     last_error = e
                     msg = str(e).lower()
 
-                    # If this model is not available for the account/API version, try the next one.
                     if (
                         "not found" in msg
                         or "unsupported" in msg
@@ -128,10 +144,13 @@ class AIAgent:
                         time.sleep(self.retry_delay)
 
         if last_error:
-            return f"Error: Gemini failed - {type(last_error).__name__}: {str(last_error)}"
-        return "Error: Gemini failed"
+            logger.error("Gemini generation failed: %s", last_error)
+            return "Something went wrong. Please try again."
+        return "Something went wrong. Please try again."
 
     def ask_question(self, query: str, context: str) -> str:
+        context = _truncate(context, self.max_context_chars)
+
         prompt = f"""
 You are a strict document-based AI assistant.
 
@@ -151,6 +170,8 @@ ANSWER:
         return self._generate(prompt)
 
     def generate_quiz(self, context: str, num_questions: int = 5) -> str:
+        context = _truncate(context, self.max_context_chars)
+
         schema = {
             "type": "array",
             "items": {
@@ -190,6 +211,8 @@ Context:
             return result
 
     def explain_simply(self, context: str) -> str:
+        context = _truncate(context, self.max_context_chars)
+
         prompt = f"""
 Explain in simple bullet points:
 
@@ -198,6 +221,8 @@ Explain in simple bullet points:
         return self._generate(prompt)
 
     def handle_agent_task(self, task: str, context: str) -> str:
+        context = _truncate(context, self.max_context_chars)
+
         prompt = f"""
 Task: {task}
 
