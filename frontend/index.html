@@ -155,6 +155,7 @@
             <span id="currentModeBadge" class="mode-badge">Q&A Mode</span>
           </div>
           <div class="header-info">
+            <span id="apiKeyStatus" class="api-key-status hidden">Key: Not set</span>
             <span class="status-indicator" id="statusIndicator">Ready</span>
           </div>
         </header>
@@ -201,6 +202,32 @@
         </div>
       </main>
     </div>
+
+    <div id="apiKeyModal" class="api-key-modal-overlay">
+      <div class="api-key-modal" role="dialog" aria-modal="true" aria-labelledby="apiKeyTitle">
+        <h3 id="apiKeyTitle">API Access</h3>
+        <p class="api-key-subtitle">Enter API Key to continue</p>
+
+        <input
+          id="apiKeyInput"
+          class="api-key-input"
+          type="password"
+          placeholder="Enter API Key"
+          autocomplete="off"
+        />
+
+        <label class="api-key-default-toggle">
+          <input type="checkbox" id="useDefaultKey" />
+          <span>Use default key</span>
+        </label>
+
+        <button id="apiKeyContinueBtn" class="api-key-continue-btn" type="button" disabled>
+          Continue
+        </button>
+      </div>
+    </div>
+
+    <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="app.js"></script>

@@ -3,6 +3,12 @@ const API_URL =
     ? "http://127.0.0.1:8000"
     : "https://your-buddy-utp8.onrender.com";
 
+const API_KEY_STORAGE_KEY = "api_key";
+const SESSION_ID_STORAGE_KEY = "client_session_id";
+const DEFAULT_API_KEY = "__BACKEND_FALLBACK__";
+const AUTH_ERROR_CODE = "auth_error";
+const MASKED_KEY_TEXT = "****-****-****";
+
 // Elements
 const dropArea = document.getElementById("dropArea");
 const fileUpload = document.getElementById("fileUpload");
@@ -15,16 +21,26 @@ const toolsSection = document.getElementById("toolsSection");
 const toolBtns = document.querySelectorAll(".tool-btn");
 const currentModeBadge = document.getElementById("currentModeBadge");
 const modeDescription = document.getElementById("modeDescription");
+const statusIndicator = document.getElementById("statusIndicator");
 
 const chatHistory = document.getElementById("chatHistory");
 const chatForm = document.getElementById("chatForm");
 const userInput = document.getElementById("userInput");
 const sendBtn = document.getElementById("sendBtn");
 
+const apiKeyModal = document.getElementById("apiKeyModal");
+const apiKeyInput = document.getElementById("apiKeyInput");
+const apiKeyContinueBtn = document.getElementById("apiKeyContinueBtn");
+const useDefaultKeyCheckbox = document.getElementById("useDefaultKey");
+const apiKeyStatus = document.getElementById("apiKeyStatus");
+const toastContainer = document.getElementById("toastContainer");
+
 let currentMode = "qa";
 let isProcessing = false;
 let fileUploaded = false;
 let selectedFiles = [];
+let aiResponsesDisabled = false;
+let apiGateResolved = false;
 
 // Mode Descriptions
 const modeDescriptions = {
@@ -41,85 +57,349 @@ const modeBadges = {
   agent: "Agent Mode",
 };
 
+// --- Global Safety Handlers ---
+window.addEventListener("unhandledrejection", (event) => {
+  event.preventDefault();
+  showToast("Unexpected error occurred. Please try again.", "error");
+});
+
+window.addEventListener("error", () => {
+  showToast("Something went wrong. Please retry.", "error");
+});
+
+// --- Initial Setup ---
+initializeApiKeyGate();
+setupEventListeners();
+updateStatusIndicator();
+
 // --- Setup Event Listeners ---
+function setupEventListeners() {
+  if (fileUpload) fileUpload.addEventListener("change", handleFileSelection);
+  if (uploadFilesBtn) uploadFilesBtn.addEventListener("click", uploadSelectedFiles);
 
-if (fileUpload) fileUpload.addEventListener("change", handleFileSelection);
-if (uploadFilesBtn) uploadFilesBtn.addEventListener("click", uploadSelectedFiles);
-
-// Drag & Drop
-if (dropArea) {
-  dropArea.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    dropArea.classList.add("dragover");
-  });
-
-  dropArea.addEventListener("dragleave", () => {
-    dropArea.classList.remove("dragover");
-  });
-
-  dropArea.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dropArea.classList.remove("dragover");
-
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      selectedFiles = Array.from(e.dataTransfer.files);
-      if (fileUpload) fileUpload.value = "";
-      renderSelectedFiles();
-    }
-  });
-}
-
-// Tool Selection
-if (toolBtns.length) {
-  toolBtns.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (!fileUploaded) return;
-
-      toolBtns.forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-
-      currentMode = btn.dataset.mode || "qa";
-      if (currentModeBadge) currentModeBadge.textContent = modeBadges[currentMode] || "Q&A Mode";
-      if (modeDescription) modeDescription.textContent = modeDescriptions[currentMode] || "";
-
-      if (currentMode === "qa") userInput.placeholder = "Ask a question...";
-      if (currentMode === "quiz") userInput.placeholder = "e.g., 'Chapter 1' or 'Photosynthesis'";
-      if (currentMode === "simplify") userInput.placeholder = "What should I simplify?";
-      if (currentMode === "agent") userInput.placeholder = "Describe the task...";
-
-      userInput.focus();
-    });
-  });
-}
-
-// Chat Submit
-if (chatForm && userInput && sendBtn) {
-  chatForm.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if (!userInput.value.trim() || isProcessing || !fileUploaded) return;
-    await processUserQuery(userInput.value.trim());
-  });
-
-  userInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+  // Drag & Drop
+  if (dropArea) {
+    dropArea.addEventListener("dragover", (e) => {
       e.preventDefault();
-      chatForm.dispatchEvent(new Event("submit"));
-    }
-  });
+      dropArea.classList.add("dragover");
+    });
 
-  userInput.addEventListener("input", function () {
-    this.style.height = "auto";
-    this.style.height = this.scrollHeight + "px";
-    if (this.value.trim() === "") {
-      this.style.height = "48px";
-    }
-  });
-} else {
-  console.warn("Chat form or input elements are missing in the DOM.");
+    dropArea.addEventListener("dragleave", () => {
+      dropArea.classList.remove("dragover");
+    });
+
+    dropArea.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropArea.classList.remove("dragover");
+
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        selectedFiles = Array.from(e.dataTransfer.files);
+        if (fileUpload) fileUpload.value = "";
+        renderSelectedFiles();
+      }
+    });
+  }
+
+  // Tool Selection
+  if (toolBtns.length) {
+    toolBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!fileUploaded) return;
+
+        toolBtns.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+
+        currentMode = btn.dataset.mode || "qa";
+        if (currentModeBadge) currentModeBadge.textContent = modeBadges[currentMode] || "Q&A Mode";
+        if (modeDescription) modeDescription.textContent = modeDescriptions[currentMode] || "";
+
+        if (currentMode === "qa") userInput.placeholder = "Ask a question...";
+        if (currentMode === "quiz") userInput.placeholder = "e.g., 'Chapter 1' or 'Photosynthesis'";
+        if (currentMode === "simplify") userInput.placeholder = "What should I simplify?";
+        if (currentMode === "agent") userInput.placeholder = "Describe the task...";
+
+        userInput.focus();
+      });
+    });
+  }
+
+  // Chat Submit
+  if (chatForm && userInput && sendBtn) {
+    chatForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!apiGateResolved) {
+        showToast("Set API key first to continue.", "warning");
+        return;
+      }
+      if (!userInput.value.trim() || isProcessing || !fileUploaded) return;
+      await processUserQuery(userInput.value.trim());
+    });
+
+    userInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        chatForm.dispatchEvent(new Event("submit"));
+      }
+    });
+
+    userInput.addEventListener("input", function () {
+      this.style.height = "auto";
+      this.style.height = this.scrollHeight + "px";
+      if (this.value.trim() === "") {
+        this.style.height = "48px";
+      }
+    });
+  } else {
+    showToast("Chat elements missing from page.", "error");
+  }
 }
 
-// --- Functions ---
+// --- API Key Gate ---
+function initializeApiKeyGate() {
+  if (!apiKeyModal || !apiKeyInput || !apiKeyContinueBtn || !useDefaultKeyCheckbox) {
+    apiGateResolved = true;
+    updateApiKeyStatus(getStoredApiKey());
+    return;
+  }
 
+  const savedKey = getStoredApiKey();
+  if (savedKey && savedKey !== DEFAULT_API_KEY) {
+    apiKeyInput.value = savedKey;
+  }
+  if (savedKey === DEFAULT_API_KEY) {
+    useDefaultKeyCheckbox.checked = true;
+    apiKeyInput.disabled = true;
+  }
+
+  updateContinueButtonState();
+  updateApiKeyStatus(savedKey);
+
+  apiKeyInput.addEventListener("input", updateContinueButtonState);
+  apiKeyInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !apiKeyContinueBtn.disabled) {
+      e.preventDefault();
+      handleApiKeyContinue();
+    }
+  });
+
+  useDefaultKeyCheckbox.addEventListener("change", () => {
+    apiKeyInput.disabled = useDefaultKeyCheckbox.checked;
+    if (useDefaultKeyCheckbox.checked) {
+      apiKeyInput.value = "";
+    }
+    updateContinueButtonState();
+  });
+
+  apiKeyContinueBtn.addEventListener("click", handleApiKeyContinue);
+
+  if (apiKeyStatus) {
+    apiKeyStatus.addEventListener("click", () => {
+      apiGateResolved = false;
+      apiKeyModal.classList.remove("hidden");
+      const saved = getStoredApiKey();
+      if (saved === DEFAULT_API_KEY) {
+        useDefaultKeyCheckbox.checked = true;
+        apiKeyInput.disabled = true;
+        apiKeyInput.value = "";
+      } else {
+        useDefaultKeyCheckbox.checked = false;
+        apiKeyInput.disabled = false;
+        apiKeyInput.value = saved || "";
+      }
+      updateContinueButtonState();
+      apiKeyInput.focus();
+    });
+  }
+
+  apiKeyInput.focus();
+}
+
+function updateContinueButtonState() {
+  if (!apiKeyContinueBtn || !apiKeyInput || !useDefaultKeyCheckbox) return;
+  const hasInput = apiKeyInput.value.trim().length > 0;
+  apiKeyContinueBtn.disabled = !hasInput && !useDefaultKeyCheckbox.checked;
+}
+
+function handleApiKeyContinue() {
+  const useDefault = useDefaultKeyCheckbox && useDefaultKeyCheckbox.checked;
+  const enteredKey = apiKeyInput ? apiKeyInput.value.trim() : "";
+  const selectedKey = useDefault ? DEFAULT_API_KEY : enteredKey;
+
+  if (!useDefault && !enteredKey) {
+    alert("API key is required.");
+    showToast("Enter a valid API key.", "warning");
+    return;
+  }
+
+  storeApiKey(selectedKey);
+  apiGateResolved = true;
+  aiResponsesDisabled = false;
+  updateStatusIndicator();
+  updateApiKeyStatus(selectedKey);
+
+  if (apiKeyModal) apiKeyModal.classList.add("hidden");
+  showToast("API key configured.", "success");
+}
+
+function updateApiKeyStatus(keyValue) {
+  if (!apiKeyStatus) return;
+  if (!keyValue) {
+    apiKeyStatus.classList.add("hidden");
+    apiKeyStatus.textContent = "Key: Not set";
+    return;
+  }
+  apiKeyStatus.classList.remove("hidden");
+  apiKeyStatus.textContent = `Key: ${MASKED_KEY_TEXT}`;
+}
+
+function getStoredApiKey() {
+  try {
+    return (localStorage.getItem(API_KEY_STORAGE_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function storeApiKey(key) {
+  try {
+    localStorage.setItem(API_KEY_STORAGE_KEY, key);
+  } catch {
+    showToast("Could not save API key in browser storage.", "warning");
+  }
+}
+
+function resolvePrimaryApiKey() {
+  const userKey = getStoredApiKey();
+  return userKey || DEFAULT_API_KEY;
+}
+
+function normalizeApiKeyForHeader(key) {
+  const normalized = String(key || "").trim();
+  if (!normalized || normalized === DEFAULT_API_KEY) return "";
+  return normalized;
+}
+
+function getOrCreateSessionId() {
+  try {
+    let existing = (localStorage.getItem(SESSION_ID_STORAGE_KEY) || "").trim();
+    if (existing) return existing;
+
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      existing = window.crypto.randomUUID();
+    } else {
+      existing = `session-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    }
+    localStorage.setItem(SESSION_ID_STORAGE_KEY, existing);
+    return existing;
+  } catch {
+    return `session-${Date.now()}`;
+  }
+}
+
+function buildRequestHeaders(baseHeaders, apiKey) {
+  const headers = new Headers(baseHeaders || {});
+  const normalizedKey = normalizeApiKeyForHeader(apiKey);
+  if (normalizedKey) {
+    headers.set("Authorization", `Bearer ${normalizedKey}`);
+  }
+  headers.set("x-user-id", getOrCreateSessionId());
+  return headers;
+}
+
+function looksLikeAuthError(response, body, message) {
+  if (response && response.status === 401) return true;
+
+  if (body && typeof body === "object") {
+    const code = String(body.code || "").toLowerCase();
+    if (code === AUTH_ERROR_CODE) return true;
+  }
+
+  const text = String(message || "").toLowerCase();
+  return /(auth_error|unauthorized|forbidden|invalid api key|api key not valid|authentication|permission denied)/i.test(
+    text
+  );
+}
+
+async function sendApiRequest(path, init, apiKey) {
+  let response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: buildRequestHeaders(init.headers, apiKey),
+    });
+  } catch {
+    return {
+      ok: false,
+      authError: false,
+      message: "Network issue. Please check connection and try again.",
+      body: null,
+      response: null,
+    };
+  }
+
+  let parsedBody = null;
+  let rawText = "";
+  try {
+    parsedBody = await response.json();
+  } catch {
+    try {
+      rawText = await response.text();
+    } catch {
+      rawText = "";
+    }
+  }
+
+  const message =
+    (parsedBody && (parsedBody.message || parsedBody.detail)) ||
+    rawText ||
+    `Request failed (${response.status})`;
+  const authError = looksLikeAuthError(response, parsedBody, message);
+  const ok = response.ok && (!parsedBody || parsedBody.status !== "error");
+
+  return {
+    ok,
+    authError,
+    message,
+    body: parsedBody,
+    rawText,
+    response,
+  };
+}
+
+async function sendApiRequestWithFallback(path, init, options = {}) {
+  const { aiRequest = false } = options;
+  const primaryKey = resolvePrimaryApiKey();
+  const first = await sendApiRequest(path, init, primaryKey);
+  if (!first.authError) return first;
+
+  alert("API key failed. Switching to fallback mode.");
+  showToast("API key failed. Trying default fallback key.", "warning");
+
+  const second = await sendApiRequest(path, init, DEFAULT_API_KEY);
+  if (second.authError && aiRequest) {
+    enableAiFallbackMode();
+  }
+  return second;
+}
+
+function enableAiFallbackMode() {
+  aiResponsesDisabled = true;
+  updateStatusIndicator();
+  showToast("AI responses are disabled. Update API key to re-enable.", "error");
+}
+
+function updateStatusIndicator() {
+  if (!statusIndicator) return;
+  if (aiResponsesDisabled) {
+    statusIndicator.textContent = "Fallback mode";
+    statusIndicator.style.color = "#f59e0b";
+    return;
+  }
+  statusIndicator.textContent = "Ready";
+  statusIndicator.style.color = "";
+}
+
+// --- Upload / Query Functions ---
 function handleFileSelection() {
   selectedFiles = Array.from((fileUpload && fileUpload.files) || []);
   renderSelectedFiles();
@@ -154,7 +434,7 @@ function renderSelectedFiles() {
     `;
   });
 
-  selectedFilesList.innerHTML = filesHtml;
+  if (selectedFilesList) selectedFilesList.innerHTML = filesHtml;
 }
 
 window.removeSelectedFile = function (index) {
@@ -166,6 +446,11 @@ window.removeSelectedFile = function (index) {
 };
 
 async function uploadSelectedFiles() {
+  if (!apiGateResolved) {
+    showToast("Set API key first to continue.", "warning");
+    return;
+  }
+
   if (!selectedFiles.length) {
     alert("Please select at least one file to upload.");
     return;
@@ -178,23 +463,20 @@ async function uploadSelectedFiles() {
   selectedFiles.forEach((file) => formData.append("files", file));
 
   try {
-    const response = await fetch(`${API_URL}/upload`, {
-      method: "POST",
-      body: formData,
-    });
+    const request = await sendApiRequestWithFallback(
+      "/upload",
+      {
+        method: "POST",
+        body: formData,
+      },
+      { aiRequest: false }
+    );
 
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      const raw = await response.text();
-      throw new Error(raw || "Invalid server response");
+    if (!request.ok) {
+      throw new Error(request.message || "Upload failed");
     }
 
-    if (!response.ok || result.status === "error") {
-      throw new Error(result.message || result.detail || "Upload failed");
-    }
-
+    const result = request.body || {};
     if (uploadStatus) uploadStatus.classList.add("hidden");
 
     selectedFiles = [];
@@ -212,11 +494,10 @@ async function uploadSelectedFiles() {
     fileUploaded = true;
 
     appendBotMessage(
-      "Files processed successfully! The knowledge base is ready. What would you like to do?"
+      "Files processed successfully. The knowledge base is ready. What would you like to do?"
     );
   } catch (error) {
-    console.error(error);
-    alert(`Error uploading files: ${error.message}`);
+    alert(`Error uploading files: ${error.message || "Upload failed"}`);
     if (uploadStatus) uploadStatus.classList.add("hidden");
     if (dropArea) dropArea.classList.remove("hidden");
   }
@@ -226,37 +507,49 @@ async function processUserQuery(query) {
   appendUserMessage(query);
   userInput.value = "";
   userInput.style.height = "48px";
+
+  if (aiResponsesDisabled) {
+    appendBotMessage(
+      "AI responses are currently disabled due to authentication failures. Update your API key to continue."
+    );
+    userInput.focus();
+    return;
+  }
+
   isProcessing = true;
   sendBtn.disabled = true;
-
   const loadingId = appendLoadingMessage();
 
   try {
-    const response = await fetch(`${API_URL}/query`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    const request = await sendApiRequestWithFallback(
+      "/query",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          mode: currentMode,
+        }),
       },
-      body: JSON.stringify({
-        query: query,
-        mode: currentMode,
-      }),
-    });
-
-    let result;
-    try {
-      result = await response.json();
-    } catch {
-      const raw = await response.text();
-      throw new Error(raw || "Invalid server response");
-    }
+      { aiRequest: true }
+    );
 
     removeLoadingMessage(loadingId);
 
-    if (!response.ok) {
-      throw new Error(result.message || result.detail || "Failed to process query");
+    if (request.authError && aiResponsesDisabled) {
+      appendBotMessage(
+        "API key authentication failed. Fallback mode is active and AI responses are disabled."
+      );
+      return;
     }
 
+    if (!request.ok) {
+      throw new Error(request.message || "Failed to process query");
+    }
+
+    const result = request.body || {};
     if (result.status === "error") {
       appendBotMessage(result.message || "Something went wrong.");
       return;
@@ -269,17 +562,14 @@ async function processUserQuery(query) {
       if (Array.isArray(quizData)) {
         renderInteractiveQuiz(quizData);
       } else {
-        appendBotMessage(
-          "⚠️ Server returned invalid quiz format:\n\n" + String(payload || "")
-        );
+        appendBotMessage("Server returned invalid quiz format.\n\n" + String(payload || ""));
       }
     } else {
       appendBotMessage(String(payload || "No response received."));
     }
   } catch (error) {
     removeLoadingMessage(loadingId);
-    console.error("Request failed:", error);
-    appendBotMessage("⚠️ Server Error:\n\n" + (error.message || "Something went wrong."));
+    appendBotMessage("Server error:\n\n" + (error.message || "Something went wrong."));
   } finally {
     isProcessing = false;
     sendBtn.disabled = false;
@@ -306,14 +596,12 @@ function parseQuizResponse(payload) {
 
   try {
     return JSON.parse(jsonStr);
-  } catch (err) {
-    console.error("Invalid JSON:", jsonStr);
+  } catch {
     return null;
   }
 }
 
 // --- Quiz UI Logic ---
-
 function renderInteractiveQuiz(quizData) {
   const div = document.createElement("div");
   div.className = "message bot-message";
@@ -355,9 +643,7 @@ function renderInteractiveQuiz(quizData) {
 
 window.selectQuizOption = function (btn, qIndex, oIndex) {
   const optionsContainer = btn.parentElement;
-  Array.from(optionsContainer.children).forEach((child) =>
-    child.classList.remove("selected")
-  );
+  Array.from(optionsContainer.children).forEach((child) => child.classList.remove("selected"));
   btn.classList.add("selected");
   optionsContainer.dataset.answered = oIndex;
 };
@@ -404,11 +690,10 @@ window.submitQuiz = function (submitBtn, totalQuestions) {
   const resultDiv = container.querySelector(".quiz-result");
   resultDiv.classList.remove("hidden");
   const scoreColor = score === totalQuestions ? "#10b981" : "#a855f7";
-  resultDiv.innerHTML = `<h4 style="color: ${scoreColor}; font-size: 1.2rem; margin: 0;">You scored ${score} out of ${totalQuestions}!</h4>`;
+  resultDiv.innerHTML = `<h4 style="color: ${scoreColor}; font-size: 1.2rem; margin: 0;">You scored ${score} out of ${totalQuestions}.</h4>`;
 };
 
 // --- UI Helpers ---
-
 function appendUserMessage(text) {
   const div = document.createElement("div");
   div.className = "message user-message";
@@ -432,8 +717,7 @@ function appendBotMessage(text) {
       } else if (typeof marked === "function") {
         formattedText = marked(String(text));
       }
-    } catch (error) {
-      console.error("Markdown parse failed:", error);
+    } catch {
       formattedText = `<p>${escapeHtml(String(text))}</p>`;
     }
   }
@@ -480,4 +764,16 @@ function escapeHtml(unsafe) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function showToast(message, type = "info") {
+  if (!toastContainer) return;
+  const toast = document.createElement("div");
+  toast.className = `app-toast ${type}`;
+  toast.textContent = String(message || "");
+  toastContainer.appendChild(toast);
+
+  window.setTimeout(() => {
+    toast.remove();
+  }, 3200);
 }

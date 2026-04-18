@@ -74,12 +74,24 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 class AIAgent:
+    AUTH_ERROR_SENTINEL = "__AUTH_ERROR__"
+
     def __init__(self):
         self.api_key = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set")
+        self.internal_fallback_key = _first_env("DEFAULT_GEMINI_API_KEY")
+        self.missing_key_message = _first_env(
+            "GEMINI_MISSING_KEY_MESSAGE",
+            default="AI service is unavailable. Please provide a valid API key.",
+        )
+        self._client_cache: dict[str, genai.Client] = {}
 
-        self.client = genai.Client(api_key=self.api_key)
+        if self.api_key:
+            self._client_cache[self.api_key] = genai.Client(api_key=self.api_key)
+
+        if self.internal_fallback_key and self.internal_fallback_key not in self._client_cache:
+            self._client_cache[self.internal_fallback_key] = genai.Client(
+                api_key=self.internal_fallback_key
+            )
 
         self.max_retries = _env_int("GEMINI_MAX_RETRIES", default=2)
         self.retry_delay = _env_float("GEMINI_RETRY_DELAY", default=1.0)
@@ -100,6 +112,47 @@ class AIAgent:
                 _first_env("GEMINI_MODEL"),
             ]
         )
+
+    def _is_auth_error_text(self, message: str) -> bool:
+        text = str(message or "").lower()
+        return any(
+            marker in text
+            for marker in (
+                "unauthorized",
+                "forbidden",
+                "api key",
+                "permission denied",
+                "authentication",
+                "invalid argument",
+                "401",
+                "403",
+            )
+        )
+
+    def _resolve_api_key(self, api_key_override: Optional[str]) -> Optional[str]:
+        override = str(api_key_override or "").strip()
+        if override:
+            return override
+        if self.api_key:
+            return self.api_key
+        return self.internal_fallback_key
+
+    def _get_client(self, api_key_override: Optional[str]) -> Optional[genai.Client]:
+        key = self._resolve_api_key(api_key_override)
+        if not key:
+            return None
+
+        cached = self._client_cache.get(key)
+        if cached is not None:
+            return cached
+
+        try:
+            client = genai.Client(api_key=key)
+            self._client_cache[key] = client
+            return client
+        except Exception as e:
+            logger.warning("Gemini client init failed: %s", str(e))
+            return None
 
     def _build_config(
         self,
@@ -149,8 +202,23 @@ class AIAgent:
         system_instruction: Optional[str] = None,
         response_json_schema: Optional[dict[str, Any]] = None,
         expect_json: bool = False,
+        api_key_override: Optional[str] = None,
     ) -> str:
+        client = self._get_client(api_key_override)
+        if client is None:
+            if expect_json:
+                return json.dumps(
+                    {
+                        "status": "error",
+                        "code": "ai_unavailable",
+                        "message": self.missing_key_message,
+                    },
+                    ensure_ascii=False,
+                )
+            return self.missing_key_message
+
         last_error: Optional[Exception] = None
+        saw_auth_error = False
 
         for model_name in self.model_candidates:
             for attempt in range(self.max_retries):
@@ -160,7 +228,7 @@ class AIAgent:
                         response_json_schema=response_json_schema,
                     )
 
-                    response = self.client.models.generate_content(
+                    response = client.models.generate_content(
                         model=model_name,
                         contents=prompt,
                         config=config,
@@ -183,6 +251,8 @@ class AIAgent:
 
                 except Exception as e:
                     last_error = e
+                    if self._is_auth_error_text(str(e)):
+                        saw_auth_error = True
                     logger.warning(
                         "Gemini attempt failed (model=%s, attempt=%s/%s): %s",
                         model_name,
@@ -197,6 +267,17 @@ class AIAgent:
         if last_error:
             logger.error("Gemini generation failed: %s", str(last_error))
             traceback.print_exc()
+            if saw_auth_error:
+                if expect_json:
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "code": "auth_error",
+                            "message": "API key authentication failed",
+                        },
+                        ensure_ascii=False,
+                    )
+                return self.AUTH_ERROR_SENTINEL
 
             if expect_json:
                 return json.dumps(
@@ -220,7 +301,13 @@ class AIAgent:
 
         return "Something went wrong. Please try again."
 
-    def ask_question(self, query: str, context: str, user_id: str = "anonymous") -> str:
+    def ask_question(
+        self,
+        query: str,
+        context: str,
+        user_id: str = "anonymous",
+        api_key_override: Optional[str] = None,
+    ) -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
@@ -239,7 +326,7 @@ QUESTION:
 
 ANSWER:
 """
-        response = self._generate(prompt)
+        response = self._generate(prompt, api_key_override=api_key_override)
 
         self._firestore_save(
             "chat_logs",
@@ -258,6 +345,7 @@ ANSWER:
         context: str,
         num_questions: int = 5,
         user_id: str = "anonymous",
+        api_key_override: Optional[str] = None,
     ) -> str:
         context = _truncate(context, self.max_context_chars)
 
@@ -292,6 +380,7 @@ Context:
             prompt,
             response_json_schema=schema,
             expect_json=True,
+            api_key_override=api_key_override,
         )
 
         try:
@@ -358,7 +447,12 @@ Context:
             )
             return json.dumps(error_obj, ensure_ascii=False)
 
-    def explain_simply(self, context: str, user_id: str = "anonymous") -> str:
+    def explain_simply(
+        self,
+        context: str,
+        user_id: str = "anonymous",
+        api_key_override: Optional[str] = None,
+    ) -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
@@ -369,7 +463,7 @@ Use short sentences and simple language.
 Context:
 {context}
 """
-        response = self._generate(prompt)
+        response = self._generate(prompt, api_key_override=api_key_override)
 
         self._firestore_save(
             "chat_logs",
@@ -382,7 +476,13 @@ Context:
         )
         return response
 
-    def handle_agent_task(self, task: str, context: str, user_id: str = "anonymous") -> str:
+    def handle_agent_task(
+        self,
+        task: str,
+        context: str,
+        user_id: str = "anonymous",
+        api_key_override: Optional[str] = None,
+    ) -> str:
         context = _truncate(context, self.max_context_chars)
 
         prompt = f"""
@@ -393,7 +493,7 @@ Context:
 
 Return a structured step-by-step response.
 """
-        response = self._generate(prompt)
+        response = self._generate(prompt, api_key_override=api_key_override)
 
         self._firestore_save(
             "chat_logs",

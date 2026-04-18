@@ -1,6 +1,7 @@
 import os
 import io
 import time
+import json
 import logging
 from typing import List, Dict, Any
 
@@ -121,6 +122,43 @@ def get_session_id(request: Request) -> str:
     if request.client and request.client.host:
         return request.client.host
     return ""
+
+
+def get_bearer_api_key(request: Request) -> str | None:
+    auth_header = (request.headers.get("authorization") or "").strip()
+    if not auth_header:
+        return None
+
+    parts = auth_header.split(" ", 1)
+    if len(parts) != 2:
+        return None
+
+    scheme, token = parts[0].strip().lower(), parts[1].strip()
+    if scheme != "bearer" or not token:
+        return None
+    return token
+
+
+def is_agent_auth_error(response_payload: Any) -> bool:
+    if response_payload == getattr(agent, "AUTH_ERROR_SENTINEL", "__AUTH_ERROR__"):
+        return True
+
+    if not isinstance(response_payload, str):
+        return False
+
+    text = response_payload.strip()
+    if not text:
+        return False
+
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return False
+
+    if not isinstance(parsed, dict):
+        return False
+
+    return str(parsed.get("code") or "").lower() == "auth_error"
 
 # ---------------- UPLOAD ----------------
 @app.post("/upload")
@@ -247,6 +285,7 @@ async def query(req: QueryRequest, request: Request):
                 content={"status": "error", "message": "Missing session id (send x-user-id header)"},
             )
         history = chat_memory.get(session_id, [])
+        api_key_override = get_bearer_api_key(request)
 
         logger.info(f"{ip} -> {req.mode} -> {req.query}")
 
@@ -303,16 +342,22 @@ async def query(req: QueryRequest, request: Request):
                 context,
                 int(req.options.get("num_questions", 5) or 5),
                 user_id=session_id,
+                api_key_override=api_key_override,
             )
 
         elif req.mode == "simplify":
-            response = agent.explain_simply(context, user_id=session_id)
+            response = agent.explain_simply(
+                context,
+                user_id=session_id,
+                api_key_override=api_key_override,
+            )
 
         elif req.mode == "agent":
             response = agent.handle_agent_task(
                 req.query,
                 context,
                 user_id=session_id,
+                api_key_override=api_key_override,
             )
 
         else:
@@ -320,6 +365,17 @@ async def query(req: QueryRequest, request: Request):
                 req.query,
                 context,
                 user_id=session_id,
+                api_key_override=api_key_override,
+            )
+
+        if is_agent_auth_error(response):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "status": "error",
+                    "code": "auth_error",
+                    "message": "API key authentication failed",
+                },
             )
 
         # ---------------- MEMORY ----------------
