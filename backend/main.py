@@ -67,8 +67,8 @@ async def upload_files(files: List[UploadFile] = File(...)):
         for file in files:
 
             # skip invalid files safely
-            if not is_valid_file(file.filename):
-                continue
+            if not file.filename or not is_valid_file(file.filename):
+                raise HTTPException(status_code=400, detail=f"Invalid file: {file.filename}")
 
             # read file safely (Render compatible)
             file_bytes = await file.read()

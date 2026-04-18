@@ -1,13 +1,13 @@
 import json
 import os
-import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
 
-# Load .env locally; on Render this is harmless and environment variables still win.
+# Load local .env; Render environment variables still take priority.
 load_dotenv()
 
 
@@ -19,14 +19,24 @@ def _first_env(*names: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-def _dedupe_keep_order(items: List[str]) -> List[str]:
-    seen = set()
-    out = []
+def _env_int(*names: str, default: int) -> int:
+    value = _first_env(*names)
+    return int(value) if value is not None else default
+
+
+def _env_float(*names: str, default: float) -> float:
+    value = _first_env(*names)
+    return float(value) if value is not None else default
+
+
+def _dedupe_keep_order(items: list[Optional[str]]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
     for item in items:
         if item and item not in seen:
             seen.add(item)
-            out.append(item)
-    return out
+            result.append(item)
+    return result
 
 
 def _strip_json_fences(text: str) -> str:
@@ -39,59 +49,55 @@ def _strip_json_fences(text: str) -> str:
 class AIAgent:
     def __init__(self):
         self.api_key = _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY")
-        self.max_retries = int(_first_env("GEMINI_MAX_RETRIES", default="2") or "2")
-        self.retry_delay = float(_first_env("GEMINI_RETRY_DELAY", default="1") or "1")
-        self.temperature = float(_first_env("GEMINI_TEMPERATURE", default="0.4") or "0.4")
-        self.top_p = float(_first_env("GEMINI_TOP_P", default="0.9") or "0.9")
-        self.top_k = int(_first_env("GEMINI_TOP_K", default="40") or "40")
 
-        # Keep the model configurable so you can switch in Render without code changes.
+        self.max_retries = _env_int("GEMINI_MAX_RETRIES", default=2)
+        self.retry_delay = _env_float("GEMINI_RETRY_DELAY", default=1.0)
+
+        self.temperature = _env_float("GEMINI_TEMPERATURE", default=0.4)
+        self.top_p = _env_float("GEMINI_TOP_P", default=0.9)
+        self.top_k = _env_int("GEMINI_TOP_K", default=40)
+
         preferred_model = _first_env("GEMINI_MODEL")
         self.model_candidates = _dedupe_keep_order(
             [
                 preferred_model,
                 "gemini-2.5-flash",
                 "gemini-2.5-pro",
-                "gemini-3-flash-preview",
             ]
         )
 
-        if self.api_key:
-            self.client = genai.Client(api_key=self.api_key)
-        else:
-            # This can still work if GEMINI_API_KEY is present in the environment.
-            self.client = genai.Client()
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY (or GOOGLE_API_KEY) is not set")
 
-    def _base_config(self) -> Dict[str, Any]:
-        return {
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "top_k": self.top_k,
-        }
+        # Current SDK client pattern.
+        self.client = genai.Client(api_key=self.api_key)
 
     def _generate(
         self,
         prompt: str,
         *,
         system_instruction: Optional[str] = None,
-        response_json_schema: Optional[Dict[str, Any]] = None,
+        response_json_schema: Optional[dict[str, Any]] = None,
     ) -> str:
-        if not self.api_key and not _first_env("GEMINI_API_KEY", "GOOGLE_API_KEY"):
-            return "Error: GEMINI_API_KEY is not set."
-
         last_error: Optional[Exception] = None
 
         for model_name in self.model_candidates:
             for attempt in range(self.max_retries):
                 try:
-                    config: Dict[str, Any] = self._base_config()
+                    config_kwargs: dict[str, Any] = {
+                        "temperature": self.temperature,
+                        "top_p": self.top_p,
+                        "top_k": self.top_k,
+                    }
 
                     if system_instruction:
-                        config["system_instruction"] = system_instruction
+                        config_kwargs["system_instruction"] = system_instruction
 
                     if response_json_schema is not None:
-                        config["response_mime_type"] = "application/json"
-                        config["response_json_schema"] = response_json_schema
+                        config_kwargs["response_mime_type"] = "application/json"
+                        config_kwargs["response_json_schema"] = response_json_schema
+
+                    config = types.GenerateContentConfig(**config_kwargs)
 
                     response = self.client.models.generate_content(
                         model=model_name,
@@ -99,20 +105,21 @@ class AIAgent:
                         config=config,
                     )
 
-                    text = (response.text or "").strip()
-                    if text:
-                        return text
+                    text = getattr(response, "text", None)
+                    if text and text.strip():
+                        return text.strip()
+
                     return "Empty response"
 
                 except Exception as e:
                     last_error = e
                     msg = str(e).lower()
 
-                    # If the model is unavailable in this account / API version, try the next one.
+                    # If this model is not available for the account/API version, try the next one.
                     if (
-                        "404" in msg
-                        or "not found" in msg
-                        or "unsupported for generatecontent" in msg
+                        "not found" in msg
+                        or "unsupported" in msg
+                        or "404" in msg
                         or "is not found for api version" in msg
                     ):
                         break
@@ -120,7 +127,9 @@ class AIAgent:
                     if attempt < self.max_retries - 1:
                         time.sleep(self.retry_delay)
 
-        return f"Error: Gemini failed - {str(last_error)}" if last_error else "Error: Gemini failed"
+        if last_error:
+            return f"Error: Gemini failed - {type(last_error).__name__}: {str(last_error)}"
+        return "Error: Gemini failed"
 
     def ask_question(self, query: str, context: str) -> str:
         prompt = f"""
@@ -128,7 +137,7 @@ You are a strict document-based AI assistant.
 
 RULES:
 - Use ONLY the provided context
-- If the answer is not in the context, say: Not found in document
+- If not found, say: Not found in document
 - Be concise
 
 CONTEXT:
@@ -142,7 +151,7 @@ ANSWER:
         return self._generate(prompt)
 
     def generate_quiz(self, context: str, num_questions: int = 5) -> str:
-        quiz_schema = {
+        schema = {
             "type": "array",
             "items": {
                 "type": "object",
@@ -154,7 +163,7 @@ ANSWER:
                         "minItems": 4,
                         "maxItems": 4,
                     },
-                    "answer_index": {"type": "integer", "minimum": 0, "maximum": 3},
+                    "answer_index": {"type": "integer"},
                 },
                 "required": ["question", "options", "answer_index"],
                 "additionalProperties": False,
@@ -162,16 +171,15 @@ ANSWER:
         }
 
         prompt = f"""
-Create {num_questions} multiple-choice questions from the context.
-
-Return only JSON that matches the provided schema.
+Create {num_questions} MCQs from the context.
+Return ONLY valid JSON.
 
 Context:
 {context}
 """
         result = self._generate(
             prompt,
-            response_json_schema=quiz_schema,
+            response_json_schema=schema,
         )
 
         try:
@@ -183,10 +191,8 @@ Context:
 
     def explain_simply(self, context: str) -> str:
         prompt = f"""
-Explain the following in simple bullet points.
-Use short sentences and simple language.
+Explain in simple bullet points:
 
-Context:
 {context}
 """
         return self._generate(prompt)
@@ -198,6 +204,6 @@ Task: {task}
 Context:
 {context}
 
-Return a structured step-by-step response.
+Return step-by-step structured answer.
 """
         return self._generate(prompt)

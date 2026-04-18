@@ -1,16 +1,25 @@
+import os
+import uuid
 import chromadb
 from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 
-
+from typing import cast
+from chromadb.api.types import EmbeddingFunction
 
 class RAGPipeline:
     def __init__(self, collection_name="document_collection"):
 
-        self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+        self.embedding_function = cast(EmbeddingFunction,embedding_functions.DefaultEmbeddingFunction())
+
+        # ✅ Persistent DB (important for Render)
+        persist_dir = os.getenv("CHROMA_DB_DIR", "./chroma_db")
 
         self.client = chromadb.Client(
-            Settings(anonymized_telemetry=False)
+            Settings(
+                persist_directory=persist_dir,
+                anonymized_telemetry=False
+            )
         )
 
         self.collection = self.client.get_or_create_collection(
@@ -26,14 +35,16 @@ class RAGPipeline:
         metadatas = []
         ids = []
 
-        for i, c in enumerate(chunks):
+        for c in chunks:
             content = c.get("content", "") if isinstance(c, dict) else str(c)
             metadata = c.get("metadata", {}) if isinstance(c, dict) else {}
 
             if content.strip():
                 documents.append(content)
                 metadatas.append(metadata)
-                ids.append(f"doc_{len(ids)}")
+
+                # ✅ FIX: unique ID (no duplicates ever)
+                ids.append(str(uuid.uuid4()))
 
         if not documents:
             return
@@ -62,4 +73,3 @@ class RAGPipeline:
             )
         except Exception as e:
             print("Clear collection error:", e)
-
