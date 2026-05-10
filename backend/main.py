@@ -60,17 +60,30 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 # ---------------- CORS ----------------
+def _parse_cors_origins() -> List[str]:
+    raw = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+default_cors_origins = [
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "https://4chuck.github.io",
+    "http://127.0.0.1:8000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://your-buddy-phi.vercel.app",
+]
+
+configured_cors_origins = _parse_cors_origins()
+allowed_cors_origins = configured_cors_origins or default_cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5500",
-        "http://127.0.0.1:5500",
-        "https://4chuck.github.io",
-        "http://127.0.0.1:8000",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://your-buddy-phi.vercel.app",
-    ],
+    allow_origins=allowed_cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
